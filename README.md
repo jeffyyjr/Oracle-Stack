@@ -9,16 +9,24 @@ Oracle Stack is an adaptive AI execution layer. A user or application sends one 
 3. A **specialist agent** executes the request using the highest-ranked model.
 4. **Judge / QA** checks the result for material failures.
 5. If QA fails, the specialist gets one repair pass and Oracle judges the repaired answer again.
-6. If the provider errors, times out, or still fails QA, Oracle automatically tries the next-ranked configured model.
+6. If the provider/model errors, times out, or still fails QA, Oracle automatically tries the next-ranked configured model.
 7. Oracle records route performance, latency, tokens, repairs, failovers, success/failure, and user feedback for future routing.
 
 Specialist domains: Business, Research, Writing, Coding, Career, and General fallback.
 
+## OpenAI three-tier execution pool
+
+With one `OPENAI_API_KEY`, Oracle can expose three independently ranked OpenAI execution routes: Sol, Terra, and Luna. The router and final QA can remain on Sol while specialist execution competes across the three tiers.
+
+The defaults are `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`. Each route has separate quality, speed, and cost priors, and learned performance is tracked separately by model/domain/depth. Set any `OPENAI_*_ENABLED=false` to remove that tier without changing code.
+
+For backward compatibility, an existing `AGENT_MODEL` remains a single-model pool when none of the three tier-specific model variables are configured. New deployments should use the tier variables.
+
 ## Providers and failover
 
-OpenAI remains the default and is used for Oracle routing and final QA. Specialist execution can be routed to OpenAI, Anthropic, and Gemini when those providers are configured.
+OpenAI remains the default and is used for Oracle routing and final QA. Specialist execution can also be routed to Anthropic and Gemini when those providers are configured.
 
-Automatic requests can fail over across the ranked execution models. Configure:
+Automatic requests can fail over across ranked execution models, including models from the same provider. Configure:
 
 ```text
 PROVIDER_TIMEOUT_MS=45000
@@ -31,7 +39,7 @@ The response telemetry includes `failoverCount` and `attemptedModels`, and `/api
 
 ## Routing policies
 
-Set `ROUTING_POLICY` to `quality`, `balanced`, or `cost`. Provider priors in `.env.example` are starting assumptions; learned performance increasingly influences selection as Oracle accumulates outcomes.
+Set `ROUTING_POLICY` to `quality`, `balanced`, or `cost`. Model priors in `.env.example` are starting assumptions; learned performance increasingly influences selection as Oracle accumulates outcomes.
 
 ## Persistent learning
 
@@ -46,9 +54,7 @@ At startup Oracle hydrates its in-memory routing cache from Postgres. If `DATABA
 
 ## Developer API
 
-The browser UI uses `POST /api/oracle`. External applications should use:
-
-`POST /v1/oracle`
+The browser UI uses `POST /api/oracle`. External applications should use `POST /v1/oracle`.
 
 Send the key as `Authorization: Bearer <secret>` or `X-Oracle-Key: <secret>`.
 
@@ -81,7 +87,7 @@ Run the repeatable benchmark suite against a running Oracle instance:
 npm run benchmark
 ```
 
-Set `ORACLE_BENCHMARK_URL` to benchmark a deployed instance instead of localhost.
+Set `ORACLE_BENCHMARK_URL` to benchmark a deployed instance instead of localhost. With the three OpenAI tiers enabled, the benchmark runner can compare Oracle auto-routing against explicit Sol, Terra, and Luna runs while explicit runs remain failover-free.
 
 ## API
 
@@ -103,4 +109,4 @@ Set `ORACLE_BENCHMARK_URL` to benchmark a deployed instance instead of localhost
 
 Oracle Stack is not intended to be another model picker or prompt enhancer. The target is a single execution API that chooses the model, specialist, and reasoning depth that fit a task, survives provider/model failures, checks the result, learns from outcomes, and improves routing over time.
 
-Next infrastructure milestones: durable quota/billing state, benchmark-driven routing weights, stronger cost accounting across mixed-model calls, and customer-facing API key management.
+Next infrastructure milestones: durable quota/billing state, benchmark-driven routing weights, stronger mixed-model cost accounting, and customer-facing API key management.
