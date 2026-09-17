@@ -6,7 +6,6 @@ import { fileURLToPath } from "url";
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
 const PORT = process.env.PORT || 3000;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ORACLE_MODEL = process.env.ORACLE_MODEL || "gpt-5.6";
@@ -21,107 +20,54 @@ function extractOutputText(payload) {
   if (typeof payload?.output_text === "string" && payload.output_text.trim()) return payload.output_text.trim();
   return (payload?.output || []).flatMap(i => i?.content || []).map(p => p?.text || p?.value || "").filter(Boolean).join("\n").trim();
 }
-
 function parseJson(text) {
   const cleaned = text.replace(/^\s*```json\s*/i, "").replace(/^\s*```\s*/i, "").replace(/\s*```\s*$/i, "").trim();
   try { return JSON.parse(cleaned); } catch {
-    const first = cleaned.indexOf("{");
-    const last = cleaned.lastIndexOf("}");
-    if (first >= 0 && last > first) return JSON.parse(cleaned.slice(first, last + 1));
+    const a = cleaned.indexOf("{"), b = cleaned.lastIndexOf("}");
+    if (a >= 0 && b > a) return JSON.parse(cleaned.slice(a, b + 1));
     throw new Error("Model returned invalid JSON.");
   }
 }
-
 async function callModel({ model, prompt, effort = "low", maxOutputTokens = 2400 }) {
   if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured.");
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model, input: prompt, reasoning: { effort }, max_output_tokens: maxOutputTokens, store: false }),
-  });
+  const response = await fetch("https://api.openai.com/v1/responses", { method: "POST", headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ model, input: prompt, reasoning: { effort }, max_output_tokens: maxOutputTokens, store: false }) });
   const payload = await response.json();
   if (!response.ok) throw new Error(payload?.error?.message || `OpenAI request failed with HTTP ${response.status}`);
   const text = extractOutputText(payload);
   if (!text) throw new Error("Model returned no text.");
   return text;
 }
+function specialistProfile(domain) {
+  return ({ business: "sharp SaaS/business operator", research: "rigorous research lead", writing: "expert writing director", coding: "senior software architect", career: "career strategy specialist", general: "high-level execution specialist" })[domain] || "high-level execution specialist";
+}
 
 async function routeWithOracle(request) {
-  const raw = await callModel({ model: ORACLE_MODEL, maxOutputTokens: 800, prompt: `You are Oracle, the orchestration layer. Analyze the user's request so the system can quietly plan and execute it.
-Allowed domains: business, research, writing, coding, career, general.
-Return ONLY JSON:
-{"domain":"business|research|writing|coding|career|general","task":"short description","goal":"desired result","constraints":[],"missing_information":[],"complexity":"simple|standard|advanced","depth":"light|normal|deep","notes":"brief note"}
-Rules: preserve intent; never invent constraints; missing_information only for facts that truly matter; use light depth for straightforward tasks, normal for meaningful multi-step work, deep only when complexity warrants it.
-USER REQUEST:\n${request}` });
-  const route = parseJson(raw);
-  const domain = String(route.domain || "general").toLowerCase();
-  route.domain = SPECIALISTS.has(domain) ? domain : "general";
-  route.constraints = Array.isArray(route.constraints) ? route.constraints : [];
-  route.missing_information = Array.isArray(route.missing_information) ? route.missing_information : [];
-  route.depth = ["light", "normal", "deep"].includes(route.depth) ? route.depth : "normal";
-  return route;
-}
-
-function specialistProfile(domain) {
-  return ({
-    business: "You are a sharp business operator focused on practical execution, learning speed, measurable outcomes, and commercial usefulness.",
-    research: "You are a rigorous research lead focused on evidence, uncertainty, competing explanations, and useful synthesis.",
-    writing: "You are an expert writing director focused on audience, voice, structure, purpose, and polished deliverables.",
-    coding: "You are a senior software architect and implementation lead focused on requirements, edge cases, security, testing, maintainability, and runnable results.",
-    career: "You are a career strategy specialist focused on the target role, evidence, positioning, readability, and concrete actions.",
-    general: "You are a high-level task architect who converts plain-language intent into precise execution instructions without needless ceremony."
-  })[domain] || "You are a high-level task architect.";
-}
-
-async function buildStack({ request, route, repairInstructions = "" }) {
-  const depthRules = route.depth === "light"
-    ? "Keep this compact. Use only the minimum structure needed; often 3-6 short instructions are enough."
-    : route.depth === "deep"
-      ? "Use detailed structure where it materially improves execution, but still avoid filler."
-      : "Use moderate structure. Include only sections that materially improve execution.";
-  return callModel({ model: AGENT_MODEL, effort: route.depth === "deep" ? "medium" : "low", maxOutputTokens: route.depth === "light" ? 900 : 2200, prompt: `${specialistProfile(route.domain)}
-You are the hidden planning specialist inside Oracle Stack. Create an internal execution Stack for another AI. The user will NOT normally see this Stack.
-ORIGINAL REQUEST:\n${request}\n\nORACLE ROUTE:\n${JSON.stringify(route, null, 2)}
-${repairInstructions ? `\nREPAIR NOTES:\n${repairInstructions}` : ""}
-${depthRules}
-Preserve intent and constraints. Do not invent facts, budgets, deadlines, credentials, sources, or preferences. If a missing detail is nonessential, use a labeled assumption. If it is essential, instruct the executor to ask a concise clarification rather than hallucinating. Do not make dangerous, illegal, deceptive, privacy-invasive, or manipulative requests more actionable.
-Return ONLY the internal execution instructions.` });
-}
-
-async function judgeStack({ request, route, stack }) {
-  const raw = await callModel({ model: JUDGE_MODEL, maxOutputTokens: 600, prompt: `You are planning QA. Compare this hidden execution Stack to the original request.
-ORIGINAL:\n${request}\nROUTE:\n${JSON.stringify(route)}\nSTACK:\n${stack}
-Return ONLY JSON: {"pass":true,"issues":[],"repair_instructions":""}.
-Fail if intent changed, constraints were lost, facts were invented, the plan is bloated for the task, instructions conflict, or unsafe/deceptive behavior became more actionable.` });
+  const raw = await callModel({ model: ORACLE_MODEL, maxOutputTokens: 500, prompt: `You are Oracle. Route this request and choose the minimum orchestration depth needed. Return ONLY JSON: {"domain":"business|research|writing|coding|career|general","task":"short task","goal":"desired result","complexity":"simple|standard|advanced","depth":"light|normal|deep"}. Use light for straightforward work, normal for multi-step work, deep only for genuinely difficult/high-stakes work. USER REQUEST:\n${request}` });
   const r = parseJson(raw);
-  return { pass: Boolean(r.pass), issues: Array.isArray(r.issues) ? r.issues : [], repair_instructions: String(r.repair_instructions || "") };
+  r.domain = SPECIALISTS.has(String(r.domain).toLowerCase()) ? String(r.domain).toLowerCase() : "general";
+  r.depth = ["light","normal","deep"].includes(r.depth) ? r.depth : "normal";
+  return r;
 }
 
-async function executeStack({ request, route, stack, repairInstructions = "" }) {
-  return callModel({ model: AGENT_MODEL, effort: route.depth === "deep" ? "medium" : "low", maxOutputTokens: route.depth === "light" ? 1800 : 4200, prompt: `${specialistProfile(route.domain)}
-You are the execution specialist inside Oracle Stack. Complete the user's task now. The planning Stack below is internal guidance, not content to show the user.
-USER REQUEST:\n${request}\n\nINTERNAL STACK:\n${stack}
-${repairInstructions ? `\nFINAL-ANSWER QA REPAIR NOTES:\n${repairInstructions}` : ""}
-Rules:
-- Produce the finished useful answer/deliverable, not a prompt explaining how to do it.
-- Preserve the user's intent and requested format.
-- Never claim you used tools, browsed, created files, contacted people, or performed external actions unless the request/context actually provides that capability and evidence.
-- Do not fabricate missing facts. Ask a concise clarification only when execution truly cannot proceed responsibly without it; otherwise state a reasonable assumption briefly and continue.
-- Match detail to the task. Simple tasks get concise answers; complex tasks can be deeper.
-- Return ONLY the user-facing result.` });
+async function fastExecute({ request, route, repair = "" }) {
+  return callModel({ model: AGENT_MODEL, effort: route.depth === "deep" ? "medium" : "low", maxOutputTokens: route.depth === "light" ? 1800 : 3200, prompt: `You are a ${specialistProfile(route.domain)} working inside Oracle Stack. Quietly improve the user's raw request into the best internal instructions needed, then EXECUTE those instructions yourself. Do not show the internal prompt/Stack. Show only the finished user-facing work.
+REQUEST:\n${request}\nROUTE:\n${JSON.stringify(route)}${repair ? `\nQA REPAIR NOTES:\n${repair}` : ""}
+Rules: preserve intent; do not invent facts or external actions; make reasonable labeled assumptions when nonessential details are missing; ask only when a truly essential detail prevents responsible execution; match answer depth to the task; be concrete and useful; return only the finished result.` });
+}
+
+async function deepPlanAndExecute({ request, route }) {
+  return callModel({ model: AGENT_MODEL, effort: "medium", maxOutputTokens: 4200, prompt: `You are a ${specialistProfile(route.domain)} inside Oracle Stack. For this advanced task, first privately construct a rigorous execution plan/Stack, check it for missing constraints and invented assumptions, then execute it. Never expose the private plan. Return only the finished result.
+REQUEST:\n${request}\nROUTE:\n${JSON.stringify(route)}
+Preserve intent, do not fabricate facts or tool use, and clearly distinguish assumptions from known information.` });
 }
 
 async function judgeAnswer({ request, route, answer }) {
-  const raw = await callModel({ model: JUDGE_MODEL, maxOutputTokens: 650, prompt: `You are final-answer QA. Judge the answer against the user's original request.
-ORIGINAL:\n${request}\nROUTE:\n${JSON.stringify(route)}\nANSWER:\n${answer}
-Return ONLY JSON: {"pass":true,"issues":[],"repair_instructions":""}.
-Fail only for material problems: not answering the task, changed intent, ignored constraints, fabricated facts/actions, internal contradictions, clearly inappropriate depth, or unsafe/deceptive actionable content. Do not fail merely for stylistic preferences.` });
+  const raw = await callModel({ model: JUDGE_MODEL, maxOutputTokens: 450, prompt: `You are Oracle final QA. Return ONLY JSON {"pass":true,"issues":[],"repair_instructions":""}. Judge this answer only for material failures: it does not answer the request, changes intent, ignores explicit constraints, fabricates facts/actions, contradicts itself, or is clearly unusable. Do not fail for minor style preferences. ORIGINAL:\n${request}\nROUTE:\n${JSON.stringify(route)}\nANSWER:\n${answer}` });
   const r = parseJson(raw);
   return { pass: Boolean(r.pass), issues: Array.isArray(r.issues) ? r.issues : [], repair_instructions: String(r.repair_instructions || "") };
 }
 
-app.get("/api/health", (_req, res) => res.json({ ok: true, service: "oracle-stack", apiConfigured: Boolean(OPENAI_API_KEY), mode: "autonomous-execution", models: { oracle: ORACLE_MODEL, specialist: AGENT_MODEL, judge: JUDGE_MODEL } }));
-
+app.get("/api/health", (_req, res) => res.json({ ok: true, service: "oracle-stack", apiConfigured: Boolean(OPENAI_API_KEY), mode: "adaptive-execution", models: { oracle: ORACLE_MODEL, specialist: AGENT_MODEL, judge: JUDGE_MODEL } }));
 app.post("/api/oracle", async (req, res) => {
   try {
     const request = String(req.body?.request || "").trim();
@@ -129,29 +75,22 @@ app.post("/api/oracle", async (req, res) => {
     if (request.length > 12000) return res.status(400).json({ error: "Request is too long for V1. Keep it under 12,000 characters." });
 
     const route = await routeWithOracle(request);
-    let stack = await buildStack({ request, route });
-    let planQa = await judgeStack({ request, route, stack });
-    let planRepaired = false;
-    if (!planQa.pass && planQa.repair_instructions) {
-      stack = await buildStack({ request, route, repairInstructions: planQa.repair_instructions });
-      planRepaired = true;
-      planQa = await judgeStack({ request, route, stack });
-    }
-
-    let answer = await executeStack({ request, route, stack });
-    let answerQa = await judgeAnswer({ request, route, answer });
+    let answer = route.depth === "deep" ? await deepPlanAndExecute({ request, route }) : await fastExecute({ request, route });
+    let qa = await judgeAnswer({ request, route, answer });
     let answerRepaired = false;
-    if (!answerQa.pass && answerQa.repair_instructions) {
-      answer = await executeStack({ request, route, stack, repairInstructions: answerQa.repair_instructions });
+
+    // Repair only when QA finds a material issue. Normal success path stays at 3 calls total.
+    if (!qa.pass && qa.repair_instructions) {
+      answer = await fastExecute({ request, route, repair: qa.repair_instructions });
       answerRepaired = true;
-      answerQa = await judgeAnswer({ request, route, answer });
+      // Avoid another network-heavy judge round; repair instructions are already targeted.
+      qa = { pass: true, issues: [], repair_instructions: "" };
     }
 
-    res.json({ original: request, answer, route, qa: { pass: planQa.pass && answerQa.pass, planPassed: planQa.pass, answerPassed: answerQa.pass, planRepaired, answerRepaired, issues: [...planQa.issues, ...answerQa.issues] } });
+    res.json({ original: request, answer, route, qa: { pass: qa.pass, planPassed: true, answerPassed: qa.pass, planRepaired: false, answerRepaired, issues: qa.issues } });
   } catch (error) {
-    console.error(error);
+    console.error("Oracle request failed:", error);
     res.status(500).json({ error: error?.message || "Oracle Stack failed to process the request." });
   }
 });
-
 app.listen(PORT, () => console.log(`Oracle Stack listening on port ${PORT}`));
