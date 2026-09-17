@@ -1,109 +1,60 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta
-      name="description"
-      content="Oracle Stack turns a normal request into a stronger AI instruction using intelligent routing and Judge/QA."
-    />
-    <title>Oracle Stack</title>
-    <link rel="stylesheet" href="/styles.css" />
-  </head>
-  <body>
-    <main class="shell">
-      <header class="topbar">
-        <a class="brand" href="/" aria-label="Oracle Stack home">
-          <span class="brand-mark">O</span>
-          <span>Oracle Stack</span>
-        </a>
-        <span class="v1-pill">V1</span>
-      </header>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Tell Oracle what you want done. It plans, routes, executes, and quality-checks the work behind the scenes." />
+  <title>Oracle Stack</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Oracle Stack home"><span class="brand-mark">O</span><span>Oracle Stack</span></a>
+      <span class="v1-pill">V1</span>
+    </header>
 
-      <section class="hero">
-        <p class="eyebrow">INTENT → SPECIALIST → JUDGE</p>
-        <h1>Say what you want.<br />Oracle builds the better instruction.</h1>
-        <p class="subhead">
-          No prompt-engineering course required. Oracle routes your request,
-          a specialist upgrades it, and Judge checks the result before you see it.
-        </p>
-      </section>
+    <section class="hero">
+      <p class="eyebrow">ASK → ORACLE HANDLES THE REST</p>
+      <h1>Say what you want.<br />Get the finished work.</h1>
+      <p class="subhead">Oracle quietly plans the task, chooses the right specialist, checks the approach, executes it, and quality-checks the answer before you see it.</p>
+    </section>
 
-      <section class="composer card">
-        <form id="oracle-form">
-          <label for="request">What do you want AI to do?</label>
-          <textarea
-            id="request"
-            name="request"
-            maxlength="12000"
-            placeholder="Example: Build me a landing page for a mobile car detailing business that gets people to book..."
-            required
-          ></textarea>
-          <div class="composer-footer">
-            <span id="char-count">0 / 12,000</span>
-            <button id="submit-btn" type="submit">
-              <span class="button-label">Build my Stack</span>
-              <span class="button-arrow">→</span>
-            </button>
-          </div>
-        </form>
-      </section>
-
-      <section id="status" class="status hidden" aria-live="polite"></section>
-
-      <section id="result" class="result hidden">
-        <div class="result-head">
-          <div>
-            <p class="eyebrow">ORACLE RESULT</p>
-            <h2>Your upgraded Stack</h2>
-          </div>
-          <div class="badges">
-            <span id="domain-badge" class="badge"></span>
-            <span id="qa-badge" class="badge"></span>
-          </div>
+    <section class="composer card">
+      <form id="oracle-form">
+        <label for="request">What do you want done?</label>
+        <textarea id="request" name="request" maxlength="12000" placeholder="Example: Build me a plan to get the first 100 users for my SaaS product..." required></textarea>
+        <div class="composer-footer">
+          <span id="char-count">0 / 12,000</span>
+          <button id="submit-btn" type="submit"><span class="button-label">Ask Oracle</span><span class="button-arrow">→</span></button>
         </div>
+      </form>
+    </section>
 
-        <div class="compare-grid">
-          <article class="card pane">
-            <div class="pane-head">
-              <span>Original</span>
-            </div>
-            <pre id="original-output"></pre>
-          </article>
+    <section id="status" class="status hidden" aria-live="polite"></section>
 
-          <article class="card pane upgraded-pane">
-            <div class="pane-head">
-              <span>Upgraded</span>
-              <button id="copy-btn" class="ghost-btn" type="button">Copy</button>
-            </div>
-            <pre id="upgraded-output"></pre>
-          </article>
+    <section id="result" class="result hidden">
+      <div class="result-head">
+        <div><p class="eyebrow">ORACLE RESULT</p><h2>Finished result</h2></div>
+        <div class="badges"><span id="domain-badge" class="badge"></span><span id="qa-badge" class="badge"></span></div>
+      </div>
+
+      <article class="card pane upgraded-pane">
+        <div class="pane-head"><span>Answer</span><button id="copy-btn" class="ghost-btn" type="button">Copy</button></div>
+        <pre id="answer-output"></pre>
+      </article>
+
+      <details class="route-details card">
+        <summary>See how Oracle handled it</summary>
+        <div class="route-grid">
+          <div><span class="detail-label">Task</span><p id="route-task"></p></div>
+          <div><span class="detail-label">Goal</span><p id="route-goal"></p></div>
+          <div><span class="detail-label">Depth</span><p id="route-complexity"></p></div>
+          <div><span class="detail-label">Quality check</span><p id="route-qa"></p></div>
         </div>
-
-        <details class="route-details card">
-          <summary>See how Oracle routed it</summary>
-          <div class="route-grid">
-            <div>
-              <span class="detail-label">Task</span>
-              <p id="route-task"></p>
-            </div>
-            <div>
-              <span class="detail-label">Goal</span>
-              <p id="route-goal"></p>
-            </div>
-            <div>
-              <span class="detail-label">Complexity</span>
-              <p id="route-complexity"></p>
-            </div>
-            <div>
-              <span class="detail-label">Judge</span>
-              <p id="route-qa"></p>
-            </div>
-          </div>
-        </details>
-      </section>
-    </main>
-
-    <script src="/app.js" defer></script>
-  </body>
+      </details>
+    </section>
+  </main>
+  <script src="/app.js" defer></script>
+</body>
 </html>
