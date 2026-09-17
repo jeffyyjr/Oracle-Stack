@@ -3,6 +3,7 @@ import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import crypto from "crypto";
+import { requireApiKey, apiAuthEnabled } from "./api-auth.js";
 import {
   initStorage,
   storageEnabled,
@@ -28,7 +29,7 @@ const ROUTING_POLICY = process.env.ROUTING_POLICY || "balanced";
 const metrics = {
   requests: 0, successes: 0, failures: 0, repairs: 0, totalMs: 0,
   calls: 0, inputTokens: 0, outputTokens: 0,
-  byDomain: {}, byDepth: {}, byModel: {}
+  byDomain: {}, byDepth: {}, byModel: {}, byApiKey: {}
 };
 
 const modelPerformance = new Map();
@@ -183,10 +184,8 @@ function getPerformance(modelId, domain, depth) {
 function persistPerformance(modelId, domain, depth) {
   if (!storageEnabled()) return;
   const routeKey = performanceKey(modelId, domain, depth);
-  saveRoutePerformance({
-    routeKey, modelId, domain, depth,
-    performance: modelPerformance.get(routeKey) || defaultPerformance()
-  }).catch(error => console.error("Failed to persist route performance:", error.message));
+  saveRoutePerformance({ routeKey, modelId, domain, depth, performance: modelPerformance.get(routeKey) || defaultPerformance() })
+    .catch(error => console.error("Failed to persist route performance:", error.message));
 }
 
 function updatePerformance({ modelId, domain, depth, success, repaired, ms }) {
@@ -207,11 +206,7 @@ function updatePerformance({ modelId, domain, depth, success, repaired, ms }) {
 function addFeedback(modelId, domain, depth, score) {
   const key = performanceKey(modelId, domain, depth);
   const current = getPerformance(modelId, domain, depth);
-  modelPerformance.set(key, {
-    ...current,
-    feedbackTotal: current.feedbackTotal + score,
-    feedbackCount: current.feedbackCount + 1
-  });
+  modelPerformance.set(key, { ...current, feedbackTotal: current.feedbackTotal + score, feedbackCount: current.feedbackCount + 1 });
   persistPerformance(modelId, domain, depth);
 }
 
@@ -227,7 +222,6 @@ function learnedScore(modelId, domain, depth) {
 function selectExecutionModel(route, requestedModel = "") {
   const models = modelRegistry();
   if (!models.length) throw new Error("No execution model provider is configured.");
-
   if (requestedModel) {
     const forced = models.find(m => m.id === requestedModel || m.model === requestedModel);
     if (forced) return { selected: forced, reason: "explicit_model_request", candidates: [] };
@@ -243,17 +237,12 @@ function selectExecutionModel(route, requestedModel = "") {
     const domainFit = model.strengths.includes(route.domain) ? 1 : 0.72;
     const learned = learnedScore(model.id, route.domain, route.depth);
     const routingScore = Number((domainFit * (
-      model.quality * weights.quality + model.speed * weights.speed +
-      model.cost * weights.cost + learned * weights.learned
+      model.quality * weights.quality + model.speed * weights.speed + model.cost * weights.cost + learned * weights.learned
     )).toFixed(4));
     return { ...model, learned, domainFit, routingScore };
   }).sort((a, b) => b.routingScore - a.routingScore);
 
-  return {
-    selected: candidates[0],
-    reason: `adaptive_${ROUTING_POLICY}`,
-    candidates: candidates.map(({ id, provider, model, learned, domainFit, routingScore }) => ({ id, provider, model, learned, domainFit, routingScore }))
-  };
+  return { selected: candidates[0], reason: `adaptive_${ROUTING_POLICY}`, candidates };
 }
 
 function specialistProfile(domain) {
@@ -309,6 +298,7 @@ app.get("/api/health", (_req, res) => res.json({
   mode: "adaptive-multi-model-execution",
   routingPolicy: ROUTING_POLICY,
   persistence: storageEnabled() ? "postgres" : "memory",
+  developerApi: apiAuthEnabled() ? "enabled" : "disabled",
   providers: [...new Set(modelRegistry().map(m => m.provider))],
   models: modelRegistry().map(m => ({ id: m.id, provider: m.provider, model: m.model }))
 }));
@@ -320,8 +310,7 @@ app.get("/api/models", (_req, res) => {
 
 app.get("/api/metrics", async (_req, res) => {
   let persistentUsage = null;
-  try { persistentUsage = await getUsageSummary(30); }
-  catch (error) { console.error("Usage summary failed:", error.message); }
+  try { persistentUsage = await getUsageSummary(30); } catch (error) { console.error("Usage summary failed:", error.message); }
   res.json({
     ...metrics,
     avgMs: metrics.successes ? Math.round(metrics.totalMs / metrics.successes) : 0,
@@ -330,6 +319,14 @@ app.get("/api/metrics", async (_req, res) => {
     persistentUsage30d: persistentUsage,
     learnedRoutes: [...modelPerformance.entries()].map(([key, value]) => ({ key, ...value }))
   });
+});
+
+app.get("/v1/usage", requireApiKey, async (req, res) => {
+  const apiKeyId = req.oracleApiKeyId;
+  const inMemory = metrics.byApiKey[apiKeyId] || { executions: 0, totalTokens: 0 };
+  let persistent = null;
+  try { persistent = await getUsageSummary(30, apiKeyId); } catch (error) { console.error("API usage lookup failed:", error.message); }
+  res.json({ apiKeyId, windowDays: 30, currentProcess: inMemory, persistent });
 });
 
 app.post("/api/feedback", async (req, res) => {
@@ -350,9 +347,10 @@ app.post("/api/feedback", async (req, res) => {
   res.json({ ok: true, executionId, score });
 });
 
-app.post("/api/oracle", async (req, res) => {
+async function oracleHandler(req, res) {
   const requestStarted = Date.now();
   const executionId = crypto.randomUUID();
+  const apiKeyId = req.oracleApiKeyId || null;
   metrics.requests++;
   let selectedModel = null;
   let route = null;
@@ -395,11 +393,18 @@ app.post("/api/oracle", async (req, res) => {
     const finalPass = repaired ? true : judged.qa.pass;
 
     updatePerformance({ modelId: selectedModel.id, domain: route.domain, depth: route.depth, success: finalPass, repaired, ms: elapsedMs });
-    executionIndex.set(executionId, { modelId: selectedModel.id, domain: route.domain, depth: route.depth, createdAt: Date.now() });
+    executionIndex.set(executionId, { modelId: selectedModel.id, domain: route.domain, depth: route.depth, apiKeyId, createdAt: Date.now() });
     if (executionIndex.size > 5000) executionIndex.delete(executionIndex.keys().next().value);
 
+    if (apiKeyId) {
+      const usage = metrics.byApiKey[apiKeyId] || { executions: 0, totalTokens: 0 };
+      usage.executions++;
+      usage.totalTokens += totalTokens;
+      metrics.byApiKey[apiKeyId] = usage;
+    }
+
     const telemetry = {
-      executionId, elapsedMs, modelCalls: calls.length, inputTokens, outputTokens, totalTokens,
+      executionId, apiKeyId, elapsedMs, modelCalls: calls.length, inputTokens, outputTokens, totalTokens,
       specialist: route.domain, depth: route.depth, repaired,
       provider: selectedModel.provider, model: selectedModel.model, modelId: selectedModel.id,
       routingPolicy: ROUTING_POLICY, routingReason: modelDecision.reason,
@@ -428,7 +433,10 @@ app.post("/api/oracle", async (req, res) => {
     console.error("Oracle request failed:", error);
     res.status(500).json({ executionId, error: error?.message || "Oracle Stack failed to process the request." });
   }
-});
+}
+
+app.post("/api/oracle", oracleHandler);
+app.post("/v1/oracle", requireApiKey, oracleHandler);
 
 async function start() {
   try {
@@ -448,7 +456,7 @@ async function start() {
       }
       console.log(`Oracle loaded ${rows.length} learned routes from Postgres.`);
     } else {
-      console.log("Oracle persistence: in-memory mode (DATABASE_URL not configured). ");
+      console.log("Oracle persistence: in-memory mode (DATABASE_URL not configured).");
     }
   } catch (error) {
     console.error("Oracle persistence unavailable; continuing in memory:", error.message);
