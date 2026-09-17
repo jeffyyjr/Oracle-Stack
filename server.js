@@ -1,4 +1,4 @@
-import express from "express";
+import "dotenv/config";\nimport express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 
