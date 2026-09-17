@@ -53,14 +53,81 @@ function safeMatch(secret, expectedHash) {
   return actual.length === expectedHash.length && crypto.timingSafeEqual(actual, expectedHash);
 }
 
-function takeQuota(key) {
+function stateFor(key) {
   const window = currentWindow();
   const current = usage.get(key.id);
-  const state = !current || current.window !== window ? { window, count: 0 } : current;
-  if (state.count >= key.quota) return { allowed: false, used: state.count, limit: key.quota, window };
+  if (!current || current.window !== window) {
+    const fresh = { window, count: 0, totalTokens: 0, estimatedCostUsd: 0 };
+    usage.set(key.id, fresh);
+    return fresh;
+  }
+  return current;
+}
+
+function takeQuota(key) {
+  const state = stateFor(key);
+  if (state.count >= key.quota) return { allowed: false, used: state.count, limit: key.quota, window: state.window };
   state.count += 1;
-  usage.set(key.id, state);
-  return { allowed: true, used: state.count, limit: key.quota, window };
+  return { allowed: true, used: state.count, limit: key.quota, window: state.window };
+}
+
+function numericEnv(name) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function pricePerMillion(provider, model) {
+  const p = String(provider || "").toLowerCase();
+  const m = String(model || "").toLowerCase();
+
+  const customInput = numericEnv(`ORACLE_${p.toUpperCase()}_INPUT_USD_PER_M`);
+  const customOutput = numericEnv(`ORACLE_${p.toUpperCase()}_OUTPUT_USD_PER_M`);
+  if (customInput !== null && customOutput !== null) return { input: customInput, output: customOutput, source: "env" };
+
+  if (p === "openai" && (m === "gpt-5.6" || m.includes("gpt-5.6-sol"))) return { input: 4, output: 20, source: "known-model" };
+  if (p === "anthropic" && (m.includes("claude-sonnet-5") || m.includes("sonnet-5"))) return { input: 2, output: 10, source: "known-model" };
+  return null;
+}
+
+function estimateCost(telemetry) {
+  const pricing = pricePerMillion(telemetry?.provider, telemetry?.model);
+  if (!pricing) return null;
+  const inputTokens = Number(telemetry?.inputTokens || 0);
+  const outputTokens = Number(telemetry?.outputTokens || 0);
+  const usd = (inputTokens / 1_000_000) * pricing.input + (outputTokens / 1_000_000) * pricing.output;
+  return {
+    usd: Number(usd.toFixed(6)),
+    inputUsdPerMillion: pricing.input,
+    outputUsdPerMillion: pricing.output,
+    pricingSource: pricing.source
+  };
+}
+
+function meterResponse(key, body) {
+  const state = stateFor(key);
+  if (body?.telemetry) {
+    const tokens = Number(body.telemetry.totalTokens || 0);
+    state.totalTokens += tokens;
+    const estimate = estimateCost(body.telemetry);
+    if (estimate) {
+      state.estimatedCostUsd = Number((state.estimatedCostUsd + estimate.usd).toFixed(6));
+      body.telemetry.estimatedCost = estimate;
+    } else {
+      body.telemetry.estimatedCost = null;
+    }
+  }
+
+  if (body && typeof body === "object" && !Array.isArray(body) && !body.quota) {
+    body.quota = {
+      window: state.window,
+      limit: key.quota,
+      used: state.count,
+      remaining: Math.max(0, key.quota - state.count),
+      currentProcessTokens: state.totalTokens,
+      currentProcessEstimatedCostUsd: state.estimatedCostUsd
+    };
+  }
+  return body;
 }
 
 export function requireApiKey(req, res, next) {
@@ -92,6 +159,9 @@ export function requireApiKey(req, res, next) {
     });
   }
 
+  const originalJson = res.json.bind(res);
+  res.json = body => originalJson(meterResponse(match, body));
+
   req.oracleApiKeyId = match.id;
   req.oracleQuota = quota;
   next();
@@ -104,8 +174,14 @@ export function configuredApiKeyIds() {
 export function quotaSnapshot(apiKeyId) {
   const key = API_KEYS.find(item => item.id === apiKeyId);
   if (!key) return null;
-  const window = currentWindow();
-  const state = usage.get(apiKeyId);
-  const used = state?.window === window ? state.count : 0;
-  return { apiKeyId, window, limit: key.quota, used, remaining: Math.max(0, key.quota - used) };
+  const state = stateFor(key);
+  return {
+    apiKeyId,
+    window: state.window,
+    limit: key.quota,
+    used: state.count,
+    remaining: Math.max(0, key.quota - state.count),
+    currentProcessTokens: state.totalTokens,
+    currentProcessEstimatedCostUsd: state.estimatedCostUsd
+  };
 }
