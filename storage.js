@@ -34,6 +34,7 @@ export async function initStorage() {
 
     CREATE TABLE IF NOT EXISTS oracle_executions (
       execution_id UUID PRIMARY KEY,
+      api_key_id TEXT,
       model_id TEXT NOT NULL,
       provider TEXT NOT NULL,
       model TEXT NOT NULL,
@@ -52,8 +53,12 @@ export async function initStorage() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
+    ALTER TABLE oracle_executions ADD COLUMN IF NOT EXISTS api_key_id TEXT;
+
     CREATE INDEX IF NOT EXISTS oracle_executions_created_at_idx
       ON oracle_executions(created_at DESC);
+    CREATE INDEX IF NOT EXISTS oracle_executions_api_key_idx
+      ON oracle_executions(api_key_id, created_at DESC);
   `);
 
   enabled = true;
@@ -97,12 +102,12 @@ export async function saveExecution(execution) {
   if (!enabled) return;
   await pool.query(`
     INSERT INTO oracle_executions (
-      execution_id, model_id, provider, model, domain, depth, routing_policy, routing_reason,
+      execution_id, api_key_id, model_id, provider, model, domain, depth, routing_policy, routing_reason,
       routing_score, success, repaired, elapsed_ms, input_tokens, output_tokens, total_tokens
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
     ON CONFLICT (execution_id) DO NOTHING
   `, [
-    execution.executionId, execution.modelId, execution.provider, execution.model,
+    execution.executionId, execution.apiKeyId || null, execution.modelId, execution.provider, execution.model,
     execution.domain, execution.depth, execution.routingPolicy, execution.routingReason,
     execution.routingScore, execution.success, execution.repaired, execution.elapsedMs,
     execution.inputTokens, execution.outputTokens, execution.totalTokens
@@ -112,7 +117,7 @@ export async function saveExecution(execution) {
 export async function findExecution(executionId) {
   if (!enabled) return null;
   const result = await pool.query(`
-    SELECT execution_id, model_id, domain, depth
+    SELECT execution_id, api_key_id, model_id, domain, depth
     FROM oracle_executions
     WHERE execution_id = $1
   `, [executionId]);
@@ -128,8 +133,11 @@ export async function saveFeedback(executionId, score) {
   `, [executionId, score]);
 }
 
-export async function getUsageSummary(days = 30) {
+export async function getUsageSummary(days = 30, apiKeyId = null) {
   if (!enabled) return null;
+  const values = [String(days)];
+  const keyFilter = apiKeyId ? "AND api_key_id = $2" : "";
+  if (apiKeyId) values.push(apiKeyId);
   const result = await pool.query(`
     SELECT
       COUNT(*)::int AS executions,
@@ -140,6 +148,7 @@ export async function getUsageSummary(days = 30) {
       COALESCE(SUM(CASE WHEN repaired THEN 1 ELSE 0 END), 0)::int AS repairs
     FROM oracle_executions
     WHERE created_at >= NOW() - ($1::text || ' days')::interval
-  `, [String(days)]);
+    ${keyFilter}
+  `, values);
   return result.rows[0];
 }
