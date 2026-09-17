@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="Tell Oracle what you want done. It plans, routes, executes, and quality-checks the work behind the scenes." />
+  <meta name="description" content="Give Oracle a task. It chooses the model and specialist, executes the work, quality-checks the result, and learns from outcomes." />
   <title>Oracle Stack</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
@@ -11,13 +11,13 @@
   <main class="shell">
     <header class="topbar">
       <a class="brand" href="/" aria-label="Oracle Stack home"><span class="brand-mark">O</span><span>Oracle Stack</span></a>
-      <span class="v1-pill">V1</span>
+      <span class="v1-pill">V2</span>
     </header>
 
     <section class="hero">
-      <p class="eyebrow">ASK → ORACLE HANDLES THE REST</p>
-      <h1>Say what you want.<br />Get the finished work.</h1>
-      <p class="subhead">Oracle quietly plans the task, chooses the right specialist, checks the approach, executes it, and quality-checks the answer before you see it.</p>
+      <p class="eyebrow">ONE REQUEST → BEST EXECUTION PATH</p>
+      <h1>Say what you want.<br />Oracle handles the rest.</h1>
+      <p class="subhead">Oracle identifies the task, chooses a specialist and execution model, runs the work, quality-checks the result, and learns which routes perform best.</p>
     </section>
 
     <section class="composer card">
@@ -36,7 +36,7 @@
     <section id="result" class="result hidden">
       <div class="result-head">
         <div><p class="eyebrow">ORACLE RESULT</p><h2>Finished result</h2></div>
-        <div class="badges"><span id="domain-badge" class="badge"></span><span id="qa-badge" class="badge"></span></div>
+        <div class="badges"><span id="domain-badge" class="badge"></span><span id="model-badge" class="badge"></span><span id="qa-badge" class="badge"></span></div>
       </div>
 
       <article class="card pane upgraded-pane">
@@ -44,12 +44,25 @@
         <pre id="answer-output"></pre>
       </article>
 
+      <div id="feedback-card" class="card pane">
+        <div class="pane-head"><span>Did Oracle choose a good path?</span><span id="feedback-status"></span></div>
+        <div class="badges" aria-label="Rate this result from 1 to 5">
+          <button class="ghost-btn feedback-btn" type="button" data-score="1">1</button>
+          <button class="ghost-btn feedback-btn" type="button" data-score="2">2</button>
+          <button class="ghost-btn feedback-btn" type="button" data-score="3">3</button>
+          <button class="ghost-btn feedback-btn" type="button" data-score="4">4</button>
+          <button class="ghost-btn feedback-btn" type="button" data-score="5">5</button>
+        </div>
+      </div>
+
       <details class="route-details card">
         <summary>See how Oracle handled it</summary>
         <div class="route-grid">
           <div><span class="detail-label">Task</span><p id="route-task"></p></div>
           <div><span class="detail-label">Goal</span><p id="route-goal"></p></div>
           <div><span class="detail-label">Depth</span><p id="route-complexity"></p></div>
+          <div><span class="detail-label">Execution model</span><p id="route-model"></p></div>
+          <div><span class="detail-label">Routing</span><p id="route-reason"></p></div>
           <div><span class="detail-label">Quality check</span><p id="route-qa"></p></div>
         </div>
       </details>
