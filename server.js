@@ -12,317 +12,146 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ORACLE_MODEL = process.env.ORACLE_MODEL || "gpt-5.6";
 const AGENT_MODEL = process.env.AGENT_MODEL || "gpt-5.6";
 const JUDGE_MODEL = process.env.JUDGE_MODEL || "gpt-5.6";
-
-const SPECIALISTS = new Set([
-  "business",
-  "research",
-  "writing",
-  "coding",
-  "career",
-  "general",
-]);
+const SPECIALISTS = new Set(["business", "research", "writing", "coding", "career", "general"]);
 
 app.use(express.json({ limit: "1mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 function extractOutputText(payload) {
-  if (typeof payload?.output_text === "string" && payload.output_text.trim()) {
-    return payload.output_text.trim();
-  }
-
-  return (payload?.output || [])
-    .flatMap((item) => item?.content || [])
-    .map((part) => part?.text || part?.value || "")
-    .filter(Boolean)
-    .join("\n")
-    .trim();
+  if (typeof payload?.output_text === "string" && payload.output_text.trim()) return payload.output_text.trim();
+  return (payload?.output || []).flatMap(i => i?.content || []).map(p => p?.text || p?.value || "").filter(Boolean).join("\n").trim();
 }
 
 function parseJson(text) {
-  const cleaned = text
-    .replace(/^\s*```json\s*/i, "")
-    .replace(/^\s*```\s*/i, "")
-    .replace(/\s*```\s*$/i, "")
-    .trim();
-
-  try {
-    return JSON.parse(cleaned);
-  } catch {
+  const cleaned = text.replace(/^\s*```json\s*/i, "").replace(/^\s*```\s*/i, "").replace(/\s*```\s*$/i, "").trim();
+  try { return JSON.parse(cleaned); } catch {
     const first = cleaned.indexOf("{");
     const last = cleaned.lastIndexOf("}");
-    if (first >= 0 && last > first) {
-      return JSON.parse(cleaned.slice(first, last + 1));
-    }
+    if (first >= 0 && last > first) return JSON.parse(cleaned.slice(first, last + 1));
     throw new Error("Model returned invalid JSON.");
   }
 }
 
-async function callModel({ model, prompt, effort = "low", maxOutputTokens = 1800 }) {
-  if (!OPENAI_API_KEY) {
-    throw new Error("OPENAI_API_KEY is not configured.");
-  }
-
+async function callModel({ model, prompt, effort = "low", maxOutputTokens = 2400 }) {
+  if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured.");
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      input: prompt,
-      reasoning: { effort },
-      max_output_tokens: maxOutputTokens,
-      store: false,
-    }),
+    headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model, input: prompt, reasoning: { effort }, max_output_tokens: maxOutputTokens, store: false }),
   });
-
   const payload = await response.json();
-
-  if (!response.ok) {
-    const message =
-      payload?.error?.message ||
-      `OpenAI request failed with HTTP ${response.status}`;
-    throw new Error(message);
-  }
-
+  if (!response.ok) throw new Error(payload?.error?.message || `OpenAI request failed with HTTP ${response.status}`);
   const text = extractOutputText(payload);
   if (!text) throw new Error("Model returned no text.");
   return text;
 }
 
 async function routeWithOracle(request) {
-  const prompt = `
-You are Oracle, the routing layer of Oracle Stack.
-
-Your job is NOT to answer the user's task. Analyze it and decide which specialist should build the upgraded instruction.
-
-Allowed domains:
-- business: strategy, product, marketing, operations, entrepreneurship, finance workflows
-- research: investigation, comparison, synthesis, evidence gathering
-- writing: books, posts, scripts, editing, creative or professional writing
-- coding: software, debugging, architecture, APIs, automation
-- career: resumes, applications, interviews, job search, workplace communication
-- general: everything else
-
-Return ONLY valid JSON with this exact shape:
-{
-  "domain": "business|research|writing|coding|career|general",
-  "task": "short description of what the user wants done",
-  "goal": "the desired end result",
-  "constraints": ["important constraint"],
-  "missing_information": ["only details that materially affect execution"],
-  "complexity": "simple|standard|advanced",
-  "notes": "brief routing note"
-}
-
-Rules:
-- Preserve the user's actual intent.
-- Do not invent constraints or preferences.
-- If the request is already clear, missing_information can be empty.
-- Choose exactly one domain.
-- Keep every field concise.
-
-USER REQUEST:
-${request}
-`;
-
-  const raw = await callModel({
-    model: ORACLE_MODEL,
-    prompt,
-    effort: "low",
-    maxOutputTokens: 800,
-  });
-
+  const raw = await callModel({ model: ORACLE_MODEL, maxOutputTokens: 800, prompt: `You are Oracle, the orchestration layer. Analyze the user's request so the system can quietly plan and execute it.
+Allowed domains: business, research, writing, coding, career, general.
+Return ONLY JSON:
+{"domain":"business|research|writing|coding|career|general","task":"short description","goal":"desired result","constraints":[],"missing_information":[],"complexity":"simple|standard|advanced","depth":"light|normal|deep","notes":"brief note"}
+Rules: preserve intent; never invent constraints; missing_information only for facts that truly matter; use light depth for straightforward tasks, normal for meaningful multi-step work, deep only when complexity warrants it.
+USER REQUEST:\n${request}` });
   const route = parseJson(raw);
   const domain = String(route.domain || "general").toLowerCase();
   route.domain = SPECIALISTS.has(domain) ? domain : "general";
   route.constraints = Array.isArray(route.constraints) ? route.constraints : [];
-  route.missing_information = Array.isArray(route.missing_information)
-    ? route.missing_information
-    : [];
-
+  route.missing_information = Array.isArray(route.missing_information) ? route.missing_information : [];
+  route.depth = ["light", "normal", "deep"].includes(route.depth) ? route.depth : "normal";
   return route;
 }
 
 function specialistProfile(domain) {
-  const profiles = {
-    business:
-      "You are a sharp business operator. Optimize for practical decisions, measurable outcomes, constraints, execution sequence, and commercial usefulness.",
-    research:
-      "You are a rigorous research lead. Optimize for scope, source quality, evidence, uncertainty, competing explanations, and a useful synthesis.",
-    writing:
-      "You are an expert writing director. Optimize for audience, voice, structure, purpose, constraints, revision criteria, and a polished deliverable.",
-    coding:
-      "You are a senior software architect and implementation lead. Optimize for requirements, environment, architecture, edge cases, tests, security, maintainability, and a runnable result.",
-    career:
-      "You are a career strategy specialist. Optimize for the target role, evidence from the user's background, clarity, positioning, ATS/readability where relevant, and concrete next actions.",
-    general:
-      "You are a high-level task architect. Turn vague intent into a precise, useful instruction with the minimum structure needed for a strong result.",
-  };
-
-  return profiles[domain] || profiles.general;
+  return ({
+    business: "You are a sharp business operator focused on practical execution, learning speed, measurable outcomes, and commercial usefulness.",
+    research: "You are a rigorous research lead focused on evidence, uncertainty, competing explanations, and useful synthesis.",
+    writing: "You are an expert writing director focused on audience, voice, structure, purpose, and polished deliverables.",
+    coding: "You are a senior software architect and implementation lead focused on requirements, edge cases, security, testing, maintainability, and runnable results.",
+    career: "You are a career strategy specialist focused on the target role, evidence, positioning, readability, and concrete actions.",
+    general: "You are a high-level task architect who converts plain-language intent into precise execution instructions without needless ceremony."
+  })[domain] || "You are a high-level task architect.";
 }
 
 async function buildStack({ request, route, repairInstructions = "" }) {
-  const profile = specialistProfile(route.domain);
+  const depthRules = route.depth === "light"
+    ? "Keep this compact. Use only the minimum structure needed; often 3-6 short instructions are enough."
+    : route.depth === "deep"
+      ? "Use detailed structure where it materially improves execution, but still avoid filler."
+      : "Use moderate structure. Include only sections that materially improve execution.";
+  return callModel({ model: AGENT_MODEL, effort: route.depth === "deep" ? "medium" : "low", maxOutputTokens: route.depth === "light" ? 900 : 2200, prompt: `${specialistProfile(route.domain)}
+You are the hidden planning specialist inside Oracle Stack. Create an internal execution Stack for another AI. The user will NOT normally see this Stack.
+ORIGINAL REQUEST:\n${request}\n\nORACLE ROUTE:\n${JSON.stringify(route, null, 2)}
+${repairInstructions ? `\nREPAIR NOTES:\n${repairInstructions}` : ""}
+${depthRules}
+Preserve intent and constraints. Do not invent facts, budgets, deadlines, credentials, sources, or preferences. If a missing detail is nonessential, use a labeled assumption. If it is essential, instruct the executor to ask a concise clarification rather than hallucinating. Do not make dangerous, illegal, deceptive, privacy-invasive, or manipulative requests more actionable.
+Return ONLY the internal execution instructions.` });
+}
 
-  const prompt = `
-${profile}
+async function judgeStack({ request, route, stack }) {
+  const raw = await callModel({ model: JUDGE_MODEL, maxOutputTokens: 600, prompt: `You are planning QA. Compare this hidden execution Stack to the original request.
+ORIGINAL:\n${request}\nROUTE:\n${JSON.stringify(route)}\nSTACK:\n${stack}
+Return ONLY JSON: {"pass":true,"issues":[],"repair_instructions":""}.
+Fail if intent changed, constraints were lost, facts were invented, the plan is bloated for the task, instructions conflict, or unsafe/deceptive behavior became more actionable.` });
+  const r = parseJson(raw);
+  return { pass: Boolean(r.pass), issues: Array.isArray(r.issues) ? r.issues : [], repair_instructions: String(r.repair_instructions || "") };
+}
 
-You are the specialist inside Oracle Stack. Convert the user's request into an upgraded instruction that another capable AI can execute immediately.
-
-ORIGINAL REQUEST:
-${request}
-
-ORACLE ROUTE:
-${JSON.stringify(route, null, 2)}
-
-${repairInstructions ? `JUDGE REPAIR NOTES:\n${repairInstructions}\n` : ""}
-
-Build a "Stack" that is materially better than the original while preserving the user's intent.
-
-Use only the sections that help:
-- ROLE
-- OBJECTIVE
-- CONTEXT
-- REQUIREMENTS
-- PROCESS
-- OUTPUT FORMAT
-- QUALITY BAR
-- ASSUMPTIONS
-
+async function executeStack({ request, route, stack, repairInstructions = "" }) {
+  return callModel({ model: AGENT_MODEL, effort: route.depth === "deep" ? "medium" : "low", maxOutputTokens: route.depth === "light" ? 1800 : 4200, prompt: `${specialistProfile(route.domain)}
+You are the execution specialist inside Oracle Stack. Complete the user's task now. The planning Stack below is internal guidance, not content to show the user.
+USER REQUEST:\n${request}\n\nINTERNAL STACK:\n${stack}
+${repairInstructions ? `\nFINAL-ANSWER QA REPAIR NOTES:\n${repairInstructions}` : ""}
 Rules:
-- Do not answer the task itself; write the upgraded instruction.
-- Do not add fake facts, credentials, budgets, deadlines, sources, or preferences.
-- If a missing detail is nonessential, use a clearly labeled assumption or placeholder rather than blocking.
-- If a missing detail is essential, tell the executing AI exactly what to clarify.
-- Be specific enough to improve results, but do not bury a simple request under unnecessary ceremony.
-- Preserve requested tone, format, tools, platform, and constraints.
-- Do not make dangerous, illegal, deceptive, privacy-invasive, or manipulative requests more actionable.
-- Return ONLY the finished upgraded Stack, with no preamble or commentary.
-`;
-
-  return callModel({
-    model: AGENT_MODEL,
-    prompt,
-    effort: route.complexity === "advanced" ? "medium" : "low",
-    maxOutputTokens: 2200,
-  });
+- Produce the finished useful answer/deliverable, not a prompt explaining how to do it.
+- Preserve the user's intent and requested format.
+- Never claim you used tools, browsed, created files, contacted people, or performed external actions unless the request/context actually provides that capability and evidence.
+- Do not fabricate missing facts. Ask a concise clarification only when execution truly cannot proceed responsibly without it; otherwise state a reasonable assumption briefly and continue.
+- Match detail to the task. Simple tasks get concise answers; complex tasks can be deeper.
+- Return ONLY the user-facing result.` });
 }
 
-async function judgeStack({ request, route, upgraded }) {
-  const prompt = `
-You are Judge / QA for Oracle Stack.
-
-Compare the upgraded Stack against the original request. Your job is to catch regressions before the user sees the result.
-
-ORIGINAL:
-${request}
-
-ROUTE:
-${JSON.stringify(route, null, 2)}
-
-UPGRADED STACK:
-${upgraded}
-
-Return ONLY valid JSON:
-{
-  "pass": true,
-  "issues": [],
-  "repair_instructions": ""
+async function judgeAnswer({ request, route, answer }) {
+  const raw = await callModel({ model: JUDGE_MODEL, maxOutputTokens: 650, prompt: `You are final-answer QA. Judge the answer against the user's original request.
+ORIGINAL:\n${request}\nROUTE:\n${JSON.stringify(route)}\nANSWER:\n${answer}
+Return ONLY JSON: {"pass":true,"issues":[],"repair_instructions":""}.
+Fail only for material problems: not answering the task, changed intent, ignored constraints, fabricated facts/actions, internal contradictions, clearly inappropriate depth, or unsafe/deceptive actionable content. Do not fail merely for stylistic preferences.` });
+  const r = parseJson(raw);
+  return { pass: Boolean(r.pass), issues: Array.isArray(r.issues) ? r.issues : [], repair_instructions: String(r.repair_instructions || "") };
 }
 
-Set pass=false if ANY of these are true:
-- The original intent changed.
-- Important constraints were lost.
-- New facts, preferences, deadlines, budgets, credentials, or requirements were invented.
-- The Stack answers the task instead of instructing another AI to do it.
-- The Stack is bloated relative to the task.
-- The output instructions are contradictory or unclear.
-- The upgrade makes a dangerous, illegal, deceptive, privacy-invasive, or manipulative request more actionable.
-
-If pass=false:
-- "issues" must contain concise descriptions.
-- "repair_instructions" must tell the specialist exactly what to fix.
-If pass=true, issues must be [] and repair_instructions must be "".
-`;
-
-  const raw = await callModel({
-    model: JUDGE_MODEL,
-    prompt,
-    effort: "low",
-    maxOutputTokens: 700,
-  });
-
-  const result = parseJson(raw);
-  return {
-    pass: Boolean(result.pass),
-    issues: Array.isArray(result.issues) ? result.issues : [],
-    repair_instructions: String(result.repair_instructions || ""),
-  };
-}
-
-app.get("/api/health", (_req, res) => {
-  res.json({
-    ok: true,
-    service: "oracle-stack",
-    apiConfigured: Boolean(OPENAI_API_KEY),
-    models: {
-      oracle: ORACLE_MODEL,
-      specialist: AGENT_MODEL,
-      judge: JUDGE_MODEL,
-    },
-  });
-});
+app.get("/api/health", (_req, res) => res.json({ ok: true, service: "oracle-stack", apiConfigured: Boolean(OPENAI_API_KEY), mode: "autonomous-execution", models: { oracle: ORACLE_MODEL, specialist: AGENT_MODEL, judge: JUDGE_MODEL } }));
 
 app.post("/api/oracle", async (req, res) => {
   try {
     const request = String(req.body?.request || "").trim();
-
-    if (!request) {
-      return res.status(400).json({ error: "Request is required." });
-    }
-
-    if (request.length > 12000) {
-      return res
-        .status(400)
-        .json({ error: "Request is too long for V1. Keep it under 12,000 characters." });
-    }
+    if (!request) return res.status(400).json({ error: "Request is required." });
+    if (request.length > 12000) return res.status(400).json({ error: "Request is too long for V1. Keep it under 12,000 characters." });
 
     const route = await routeWithOracle(request);
-    let upgraded = await buildStack({ request, route });
-    let qa = await judgeStack({ request, route, upgraded });
-    let repaired = false;
-
-    if (!qa.pass && qa.repair_instructions) {
-      upgraded = await buildStack({
-        request,
-        route,
-        repairInstructions: qa.repair_instructions,
-      });
-      repaired = true;
-      qa = await judgeStack({ request, route, upgraded });
+    let stack = await buildStack({ request, route });
+    let planQa = await judgeStack({ request, route, stack });
+    let planRepaired = false;
+    if (!planQa.pass && planQa.repair_instructions) {
+      stack = await buildStack({ request, route, repairInstructions: planQa.repair_instructions });
+      planRepaired = true;
+      planQa = await judgeStack({ request, route, stack });
     }
 
-    res.json({
-      original: request,
-      upgraded,
-      route,
-      qa: {
-        pass: qa.pass,
-        issues: qa.issues,
-        repaired,
-      },
-    });
+    let answer = await executeStack({ request, route, stack });
+    let answerQa = await judgeAnswer({ request, route, answer });
+    let answerRepaired = false;
+    if (!answerQa.pass && answerQa.repair_instructions) {
+      answer = await executeStack({ request, route, stack, repairInstructions: answerQa.repair_instructions });
+      answerRepaired = true;
+      answerQa = await judgeAnswer({ request, route, answer });
+    }
+
+    res.json({ original: request, answer, route, qa: { pass: planQa.pass && answerQa.pass, planPassed: planQa.pass, answerPassed: answerQa.pass, planRepaired, answerRepaired, issues: [...planQa.issues, ...answerQa.issues] } });
   } catch (error) {
     console.error(error);
-    res.status(500).json({
-      error: error?.message || "Oracle Stack failed to process the request.",
-    });
+    res.status(500).json({ error: error?.message || "Oracle Stack failed to process the request." });
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Oracle Stack listening on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Oracle Stack listening on port ${PORT}`));
