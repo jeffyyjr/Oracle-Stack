@@ -1,4 +1,5 @@
-import "dotenv/config";\nimport express from "express";
+import "dotenv/config";
+import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -320,10 +321,6 @@ app.post("/api/oracle", async (req, res) => {
       error: error?.message || "Oracle Stack failed to process the request.",
     });
   }
-});
-
-app.get("*", (_req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
 app.listen(PORT, () => {
