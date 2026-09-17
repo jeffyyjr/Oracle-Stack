@@ -1,0 +1,20 @@
+[
+  {"id":"business-1","domain":"business","prompt":"I made a SaaS for small contractors but nobody is signing up. I have $200 and two weeks. Tell me exactly what to do."},
+  {"id":"business-2","domain":"business","prompt":"My customers keep quitting after the first month. Figure out what I should measure and what I should change first."},
+  {"id":"business-3","domain":"business","prompt":"I want to charge for an AI tool that saves office workers time. Give me a simple pricing plan and explain the tradeoffs."},
+  {"id":"coding-1","domain":"coding","prompt":"My Node API gets slow when several users hit it at once. Give me a practical debugging plan and the first fixes to test."},
+  {"id":"coding-2","domain":"coding","prompt":"Design an API endpoint for submitting jobs that might take five minutes. It can't make users wait on the HTTP request."},
+  {"id":"coding-3","domain":"coding","prompt":"Review this idea: every request to my AI app calls three expensive models. I need quality but the bill is getting stupid. Redesign it."},
+  {"id":"research-1","domain":"research","prompt":"I need to decide whether a four-day workweek actually improves productivity. Tell me how you'd research this without cherry-picking evidence."},
+  {"id":"research-2","domain":"research","prompt":"Compare heat pumps and gas furnaces for a homeowner. Separate facts, assumptions, and things that depend on location."},
+  {"id":"research-3","domain":"research","prompt":"I keep seeing claims that AI agents will replace SaaS. Give me a research framework to determine whether that is actually happening."},
+  {"id":"writing-1","domain":"writing","prompt":"Rewrite this product idea so normal people understand it: it dynamically routes inference across heterogeneous LLM providers using adaptive evaluation telemetry."},
+  {"id":"writing-2","domain":"writing","prompt":"Write a short landing-page pitch for a tool where I type a rough request and it figures out which AI should handle it."},
+  {"id":"writing-3","domain":"writing","prompt":"Turn this into a professional but firm message: you keep changing what you asked for then blaming us when the job takes longer."},
+  {"id":"career-1","domain":"career","prompt":"I've managed a warehouse team but don't have a degree. I want a better-paying job that doesn't require starting over. Build me a realistic plan."},
+  {"id":"career-2","domain":"career","prompt":"I have an interview for an operations manager role tomorrow. Give me the highest-value preparation I can do tonight."},
+  {"id":"career-3","domain":"career","prompt":"My resume lists duties but doesn't show impact. Tell me how to turn warehouse supervisor work into strong accomplishment bullets."},
+  {"id":"general-1","domain":"general","prompt":"I have ten things to do today and keep bouncing between them. Give me a system I can start using in five minutes."},
+  {"id":"general-2","domain":"general","prompt":"Explain compound interest to somebody who hates math, then give one example with actual numbers."},
+  {"id":"general-3","domain":"general","prompt":"I need to choose between doing something cheap now or doing it properly later. Give me a decision framework I can reuse."}
+]
