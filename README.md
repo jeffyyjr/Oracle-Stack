@@ -1,26 +1,37 @@
 # Oracle Stack
 
-Oracle Stack is an adaptive AI execution layer. A user or application sends Oracle one request; Oracle determines the task type and depth, selects a specialist and execution model, runs the task, QA-checks the answer, repairs material failures, and records performance signals for future routing.
+Oracle Stack is an adaptive AI execution layer. A user or application sends one request; Oracle identifies the task and depth, chooses a specialist and execution model, runs the work, QA-checks it, repairs material failures, and learns from the outcome.
 
 ## V2 flow
 
 1. **Oracle Router** identifies intent, domain, complexity, and minimum execution depth.
-2. **Adaptive Model Router** scores configured execution models using domain fit, quality, speed, cost, and learned performance.
-3. A **specialist agent** executes the request using the selected provider/model.
-4. **Judge / QA** checks the answer for material failures.
-5. If QA fails, the specialist gets one automatic repair pass.
-6. Oracle records latency, token usage, model selection, repairs, success/failure, and user feedback.
-7. Future requests use those results as part of their routing score.
+2. **Adaptive Model Router** ranks configured execution models using domain fit, quality, speed, cost, and learned performance.
+3. A **specialist agent** executes the request using the highest-ranked model.
+4. **Judge / QA** checks the result for material failures.
+5. If QA fails, the specialist gets one repair pass and Oracle judges the repaired answer again.
+6. If the provider errors, times out, or still fails QA, Oracle automatically tries the next-ranked configured model.
+7. Oracle records route performance, latency, tokens, repairs, failovers, success/failure, and user feedback for future routing.
 
 Specialist domains: Business, Research, Writing, Coding, Career, and General fallback.
 
-## Providers
+## Providers and failover
 
-OpenAI remains the default and is used for Oracle routing and final QA. Execution can be routed to OpenAI, Anthropic, and Gemini when those providers are configured.
+OpenAI remains the default and is used for Oracle routing and final QA. Specialist execution can be routed to OpenAI, Anthropic, and Gemini when those providers are configured.
+
+Automatic requests can fail over across the ranked execution models. Configure:
+
+```text
+PROVIDER_TIMEOUT_MS=45000
+MAX_FAILOVER_MODELS=3
+```
+
+`MAX_FAILOVER_MODELS` is capped at five. Explicit model requests used for benchmarking do not fail over, so benchmarks remain model-specific.
+
+The response telemetry includes `failoverCount` and `attemptedModels`, and `/api/metrics` exposes aggregate failovers and provider failures.
 
 ## Routing policies
 
-Set `ROUTING_POLICY` to `quality`, `balanced`, or `cost`. Provider priors in `.env.example` are starting assumptions; learned route performance increasingly influences selection as Oracle accumulates outcomes.
+Set `ROUTING_POLICY` to `quality`, `balanced`, or `cost`. Provider priors in `.env.example` are starting assumptions; learned performance increasingly influences selection as Oracle accumulates outcomes.
 
 ## Persistent learning
 
@@ -31,39 +42,25 @@ When Postgres is configured Oracle automatically creates and uses:
 - `oracle_route_performance` — durable learned performance by model/domain/depth
 - `oracle_executions` — execution history including API key attribution, provider, model, route, QA outcome, latency, tokens, repairs, and user feedback
 
-At startup Oracle hydrates its in-memory routing cache from Postgres. If `DATABASE_URL` is absent or storage initialization fails, Oracle continues in memory rather than preventing the service from starting.
+At startup Oracle hydrates its in-memory routing cache from Postgres. If `DATABASE_URL` is absent or initialization fails, Oracle continues in memory.
 
 ## Developer API
 
-The browser UI continues to use `POST /api/oracle`. External applications should use the authenticated API:
+The browser UI uses `POST /api/oracle`. External applications should use:
 
 `POST /v1/oracle`
 
-Send the key as either:
+Send the key as `Authorization: Bearer <secret>` or `X-Oracle-Key: <secret>`.
 
-```text
-Authorization: Bearer <secret>
-```
+Configure keys with `ORACLE_API_KEYS` using comma-separated `id:secret` pairs. Only the key ID is written to telemetry; secrets are hashed in memory and are not logged.
 
-or:
+### Quotas and usage
 
-```text
-X-Oracle-Key: <secret>
-```
+`GET /v1/usage` returns the calling key's quota state plus current-process usage and, with Postgres, its durable 30-day usage summary.
 
-Configure keys with `ORACLE_API_KEYS` using `id:secret` pairs separated by commas:
+`ORACLE_API_DEFAULT_QUOTA` sets the default monthly execution quota. `ORACLE_API_QUOTAS` provides per-key overrides, such as `owner=5000,starter=100`.
 
-```text
-ORACLE_API_KEYS=customer-a:secret-one,customer-b:secret-two
-```
-
-Only the key ID is written to telemetry; the secret is hashed in memory for comparison and is not logged.
-
-### Per-key usage
-
-`GET /v1/usage`
-
-Use the same API key. Oracle returns the current-process execution/token count and, when Postgres is enabled, the durable 30-day usage summary for that key.
+When pricing is known, authenticated responses also include an estimated API cost. Unknown/custom models stay unpriced unless explicit per-provider price overrides are supplied in environment variables.
 
 ## Local setup
 
@@ -88,63 +85,22 @@ Set `ORACLE_BENCHMARK_URL` to benchmark a deployed instance instead of localhost
 
 ## API
 
-### Health
+`GET /api/health` — routing, persistence, developer API and failover status.
 
-`GET /api/health`
+`GET /api/models` — configured execution models and routing priors.
 
-Returns routing mode, policy, persistence mode, developer API state, configured providers, and models.
+`POST /api/oracle` — browser/product execution.
 
-### Available models
+`POST /v1/oracle` — authenticated developer execution.
 
-`GET /api/models`
+`POST /api/feedback` — submit a 1–5 outcome score using the returned `executionId`.
 
-Returns configured execution models and routing priors.
+`GET /api/metrics` — system routing, learning, failure and failover metrics.
 
-### Execute from the browser/product UI
-
-`POST /api/oracle`
-
-```json
-{
-  "request": "Build me a landing page for a dog grooming business"
-}
-```
-
-### Execute from another application
-
-`POST /v1/oracle`
-
-```json
-{
-  "request": "Refactor this Node API for lower latency"
-}
-```
-
-Oracle chooses the execution model automatically. For benchmark/testing purposes a caller can explicitly request a configured model by registry ID or model name.
-
-The response includes the answer, route, QA result, selected model, and telemetry. Telemetry includes an `executionId` and API key ID when applicable.
-
-### Submit outcome feedback
-
-`POST /api/feedback`
-
-```json
-{
-  "executionId": "<execution id from Oracle>",
-  "score": 5
-}
-```
-
-Scores are 1–5. With Postgres enabled feedback still works after a service restart because Oracle can recover the execution record from durable storage.
-
-### Metrics and usage
-
-`GET /api/metrics` returns system-level routing and learning metrics.
-
-`GET /v1/usage` returns authenticated usage for the calling API key.
+`GET /v1/usage` — authenticated usage/quota information for the calling API key.
 
 ## Product direction
 
-Oracle Stack is not intended to be another model picker or prompt enhancer. The target is a single execution API that chooses the model, specialist, and reasoning depth that best fit a task, checks the result, learns from outcomes, and improves routing over time.
+Oracle Stack is not intended to be another model picker or prompt enhancer. The target is a single execution API that chooses the model, specialist, and reasoning depth that fit a task, survives provider/model failures, checks the result, learns from outcomes, and improves routing over time.
 
-Next infrastructure milestones: enforceable per-key quotas, real provider cost accounting, production fallback/retry routing, and benchmark-driven tuning of routing weights.
+Next infrastructure milestones: durable quota/billing state, benchmark-driven routing weights, stronger cost accounting across mixed-model calls, and customer-facing API key management.

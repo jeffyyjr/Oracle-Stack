@@ -3,35 +3,29 @@ import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import crypto from "crypto";
-import { requireApiKey, apiAuthEnabled } from "./api-auth.js";
+import { requireApiKey, apiAuthEnabled, quotaSnapshot } from "./api-auth.js";
 import {
-  initStorage,
-  storageEnabled,
-  loadRoutePerformance,
-  saveRoutePerformance,
-  saveExecution,
-  findExecution,
-  saveFeedback,
-  getUsageSummary
+  initStorage, storageEnabled, loadRoutePerformance, saveRoutePerformance,
+  saveExecution, findExecution, saveFeedback, getUsageSummary
 } from "./storage.js";
 
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PORT = process.env.PORT || 3000;
-
 const SPECIALISTS = new Set(["business", "research", "writing", "coding", "career", "general"]);
 const DEPTHS = new Set(["light", "normal", "deep"]);
 const ROUTER_MODEL = process.env.ORACLE_MODEL || "gpt-5.6";
 const JUDGE_MODEL = process.env.JUDGE_MODEL || "gpt-5.6";
 const ROUTING_POLICY = process.env.ROUTING_POLICY || "balanced";
+const PROVIDER_TIMEOUT_MS = Math.max(5000, Number(process.env.PROVIDER_TIMEOUT_MS || 45000));
+const MAX_FAILOVER_MODELS = Math.max(1, Math.min(5, Number(process.env.MAX_FAILOVER_MODELS || 3)));
 
 const metrics = {
-  requests: 0, successes: 0, failures: 0, repairs: 0, totalMs: 0,
+  requests: 0, successes: 0, failures: 0, repairs: 0, failovers: 0, totalMs: 0,
   calls: 0, inputTokens: 0, outputTokens: 0,
-  byDomain: {}, byDepth: {}, byModel: {}, byApiKey: {}
+  byDomain: {}, byDepth: {}, byModel: {}, byApiKey: {}, providerFailures: {}
 };
-
 const modelPerformance = new Map();
 const executionIndex = new Map();
 
@@ -55,38 +49,26 @@ function modelRegistry() {
     cost: envNumber("OPENAI_COST_SCORE", 0.45)
   }];
 
-  if (process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_MODEL) {
-    models.push({
-      id: `anthropic:${process.env.ANTHROPIC_MODEL}`,
-      provider: "anthropic",
-      model: process.env.ANTHROPIC_MODEL,
-      enabled: true,
-      strengths: (process.env.ANTHROPIC_STRENGTHS || "writing,research,coding,general").split(",").map(v => v.trim()).filter(Boolean),
-      quality: envNumber("ANTHROPIC_QUALITY_SCORE", 0.9),
-      speed: envNumber("ANTHROPIC_SPEED_SCORE", 0.68),
-      cost: envNumber("ANTHROPIC_COST_SCORE", 0.5)
-    });
-  }
+  if (process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_MODEL) models.push({
+    id: `anthropic:${process.env.ANTHROPIC_MODEL}`,
+    provider: "anthropic", model: process.env.ANTHROPIC_MODEL, enabled: true,
+    strengths: (process.env.ANTHROPIC_STRENGTHS || "writing,research,coding,general").split(",").map(v => v.trim()).filter(Boolean),
+    quality: envNumber("ANTHROPIC_QUALITY_SCORE", 0.9), speed: envNumber("ANTHROPIC_SPEED_SCORE", 0.68), cost: envNumber("ANTHROPIC_COST_SCORE", 0.5)
+  });
 
-  if (process.env.GEMINI_API_KEY && process.env.GEMINI_MODEL) {
-    models.push({
-      id: `gemini:${process.env.GEMINI_MODEL}`,
-      provider: "gemini",
-      model: process.env.GEMINI_MODEL,
-      enabled: true,
-      strengths: (process.env.GEMINI_STRENGTHS || "research,general,coding,business").split(",").map(v => v.trim()).filter(Boolean),
-      quality: envNumber("GEMINI_QUALITY_SCORE", 0.87),
-      speed: envNumber("GEMINI_SPEED_SCORE", 0.82),
-      cost: envNumber("GEMINI_COST_SCORE", 0.7)
-    });
-  }
+  if (process.env.GEMINI_API_KEY && process.env.GEMINI_MODEL) models.push({
+    id: `gemini:${process.env.GEMINI_MODEL}`,
+    provider: "gemini", model: process.env.GEMINI_MODEL, enabled: true,
+    strengths: (process.env.GEMINI_STRENGTHS || "research,general,coding,business").split(",").map(v => v.trim()).filter(Boolean),
+    quality: envNumber("GEMINI_QUALITY_SCORE", 0.87), speed: envNumber("GEMINI_SPEED_SCORE", 0.82), cost: envNumber("GEMINI_COST_SCORE", 0.7)
+  });
 
-  return models.filter(m => m.enabled);
+  return models.filter(model => model.enabled);
 }
 
 function extractOutputText(payload) {
   if (typeof payload?.output_text === "string" && payload.output_text.trim()) return payload.output_text.trim();
-  return (payload?.output || []).flatMap(i => i?.content || []).map(p => p?.text || p?.value || "").filter(Boolean).join("\n").trim();
+  return (payload?.output || []).flatMap(item => item?.content || []).map(part => part?.text || part?.value || "").filter(Boolean).join("\n").trim();
 }
 
 function parseJson(text) {
@@ -107,9 +89,19 @@ function normalizeUsage(usage = {}) {
   };
 }
 
+async function fetchWithTimeout(url, options) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PROVIDER_TIMEOUT_MS);
+  try { return await fetch(url, { ...options, signal: controller.signal }); }
+  catch (error) {
+    if (error?.name === "AbortError") throw new Error(`Provider timed out after ${PROVIDER_TIMEOUT_MS}ms`);
+    throw error;
+  } finally { clearTimeout(timer); }
+}
+
 async function callOpenAI({ model, prompt, effort = "low", maxOutputTokens = 2200 }) {
   if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured.");
-  const response = await fetch("https://api.openai.com/v1/responses", {
+  const response = await fetchWithTimeout("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({ model, input: prompt, reasoning: { effort }, max_output_tokens: maxOutputTokens, store: false })
@@ -123,13 +115,9 @@ async function callOpenAI({ model, prompt, effort = "low", maxOutputTokens = 220
 
 async function callAnthropic({ model, prompt, maxOutputTokens = 2200 }) {
   if (!process.env.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is not configured.");
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
+  const response = await fetchWithTimeout("https://api.anthropic.com/v1/messages", {
     method: "POST",
-    headers: {
-      "x-api-key": process.env.ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01",
-      "content-type": "application/json"
-    },
+    headers: { "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
     body: JSON.stringify({ model, max_tokens: maxOutputTokens, messages: [{ role: "user", content: prompt }] })
   });
   const payload = await response.json();
@@ -142,9 +130,8 @@ async function callAnthropic({ model, prompt, maxOutputTokens = 2200 }) {
 async function callGemini({ model, prompt, maxOutputTokens = 2200 }) {
   if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not configured.");
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
+  const response = await fetchWithTimeout(url, {
+    method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens } })
   });
   const payload = await response.json();
@@ -157,10 +144,15 @@ async function callGemini({ model, prompt, maxOutputTokens = 2200 }) {
 async function callProvider({ provider, model, prompt, effort = "low", maxOutputTokens = 2200 }) {
   const started = Date.now();
   let result;
-  if (provider === "openai") result = await callOpenAI({ model, prompt, effort, maxOutputTokens });
-  else if (provider === "anthropic") result = await callAnthropic({ model, prompt, maxOutputTokens });
-  else if (provider === "gemini") result = await callGemini({ model, prompt, maxOutputTokens });
-  else throw new Error(`Unsupported provider: ${provider}`);
+  try {
+    if (provider === "openai") result = await callOpenAI({ model, prompt, effort, maxOutputTokens });
+    else if (provider === "anthropic") result = await callAnthropic({ model, prompt, maxOutputTokens });
+    else if (provider === "gemini") result = await callGemini({ model, prompt, maxOutputTokens });
+    else throw new Error(`Unsupported provider: ${provider}`);
+  } catch (error) {
+    metrics.providerFailures[provider] = (metrics.providerFailures[provider] || 0) + 1;
+    throw error;
+  }
 
   const ms = Date.now() - started;
   metrics.calls++;
@@ -169,17 +161,9 @@ async function callProvider({ provider, model, prompt, effort = "low", maxOutput
   return { ...result, ms, provider, model };
 }
 
-function performanceKey(modelId, domain, depth) {
-  return `${modelId}|${domain}|${depth}`;
-}
-
-function defaultPerformance() {
-  return { attempts: 0, successes: 0, failures: 0, repairs: 0, feedbackTotal: 0, feedbackCount: 0, avgMs: 0 };
-}
-
-function getPerformance(modelId, domain, depth) {
-  return modelPerformance.get(performanceKey(modelId, domain, depth)) || defaultPerformance();
-}
+function performanceKey(modelId, domain, depth) { return `${modelId}|${domain}|${depth}`; }
+function defaultPerformance() { return { attempts: 0, successes: 0, failures: 0, repairs: 0, feedbackTotal: 0, feedbackCount: 0, avgMs: 0 }; }
+function getPerformance(modelId, domain, depth) { return modelPerformance.get(performanceKey(modelId, domain, depth)) || defaultPerformance(); }
 
 function persistPerformance(modelId, domain, depth) {
   if (!storageEnabled()) return;
@@ -223,8 +207,9 @@ function selectExecutionModel(route, requestedModel = "") {
   const models = modelRegistry();
   if (!models.length) throw new Error("No execution model provider is configured.");
   if (requestedModel) {
-    const forced = models.find(m => m.id === requestedModel || m.model === requestedModel);
-    if (forced) return { selected: forced, reason: "explicit_model_request", candidates: [] };
+    const forced = models.find(model => model.id === requestedModel || model.model === requestedModel);
+    if (!forced) throw new Error(`Requested model is not configured: ${requestedModel}`);
+    return { selected: forced, reason: "explicit_model_request", candidates: [forced], allowFailover: false };
   }
 
   const weights = ROUTING_POLICY === "quality"
@@ -236,24 +221,15 @@ function selectExecutionModel(route, requestedModel = "") {
   const candidates = models.map(model => {
     const domainFit = model.strengths.includes(route.domain) ? 1 : 0.72;
     const learned = learnedScore(model.id, route.domain, route.depth);
-    const routingScore = Number((domainFit * (
-      model.quality * weights.quality + model.speed * weights.speed + model.cost * weights.cost + learned * weights.learned
-    )).toFixed(4));
+    const routingScore = Number((domainFit * (model.quality * weights.quality + model.speed * weights.speed + model.cost * weights.cost + learned * weights.learned)).toFixed(4));
     return { ...model, learned, domainFit, routingScore };
   }).sort((a, b) => b.routingScore - a.routingScore);
 
-  return { selected: candidates[0], reason: `adaptive_${ROUTING_POLICY}`, candidates };
+  return { selected: candidates[0], reason: `adaptive_${ROUTING_POLICY}`, candidates, allowFailover: true };
 }
 
 function specialistProfile(domain) {
-  return ({
-    business: "sharp SaaS/business operator",
-    research: "rigorous research lead",
-    writing: "expert writing director",
-    coding: "senior software architect",
-    career: "career strategy specialist",
-    general: "high-level execution specialist"
-  })[domain] || "high-level execution specialist";
+  return ({ business: "sharp SaaS/business operator", research: "rigorous research lead", writing: "expert writing director", coding: "senior software architect", career: "career strategy specialist", general: "high-level execution specialist" })[domain] || "high-level execution specialist";
 }
 
 async function routeWithOracle(request) {
@@ -261,10 +237,10 @@ async function routeWithOracle(request) {
     provider: "openai", model: ROUTER_MODEL, maxOutputTokens: 450,
     prompt: `You are Oracle Router. Classify the request and choose the MINIMUM depth needed. Return ONLY JSON: {"domain":"business|research|writing|coding|career|general","task":"short task","goal":"desired result","complexity":"simple|standard|advanced","depth":"light|normal|deep"}. Light = straightforward. Normal = meaningful multi-step. Deep = genuinely difficult/high-stakes. USER REQUEST:\n${request}`
   });
-  const r = parseJson(result.text);
-  r.domain = SPECIALISTS.has(String(r.domain).toLowerCase()) ? String(r.domain).toLowerCase() : "general";
-  r.depth = DEPTHS.has(String(r.depth).toLowerCase()) ? String(r.depth).toLowerCase() : "normal";
-  return { route: r, call: result };
+  const route = parseJson(result.text);
+  route.domain = SPECIALISTS.has(String(route.domain).toLowerCase()) ? String(route.domain).toLowerCase() : "general";
+  route.depth = DEPTHS.has(String(route.depth).toLowerCase()) ? String(route.depth).toLowerCase() : "normal";
+  return { route, call: result };
 }
 
 async function execute({ request, route, executionModel, repair = "" }) {
@@ -275,10 +251,8 @@ async function execute({ request, route, executionModel, repair = "" }) {
       : { tokens: 2400, length: "Aim for a practical answer around 700-1200 words when appropriate; use less when possible." };
 
   return callProvider({
-    provider: executionModel.provider,
-    model: executionModel.model,
-    effort: route.depth === "deep" ? "medium" : "low",
-    maxOutputTokens: limits.tokens,
+    provider: executionModel.provider, model: executionModel.model,
+    effort: route.depth === "deep" ? "medium" : "low", maxOutputTokens: limits.tokens,
     prompt: `You are a ${specialistProfile(route.domain)} inside Oracle Stack. Privately improve the raw request into strong execution instructions, then execute them yourself. Never expose the internal Stack. Return only the finished work.\nREQUEST:\n${request}\nROUTE:\n${JSON.stringify(route)}${repair ? `\nQA REPAIR NOTES:\n${repair}` : ""}\n${limits.length}\nPreserve intent. Do not invent facts or external actions. Make labeled assumptions for nonessential unknowns. Ask only if a truly essential detail prevents responsible execution. Prioritize concrete useful information over exhaustive text. Do not repeat the same recommendation in multiple sections.`
   });
 }
@@ -288,19 +262,49 @@ async function judgeAnswer({ request, route, answer }) {
     provider: "openai", model: JUDGE_MODEL, maxOutputTokens: 400,
     prompt: `You are Oracle final QA. Return ONLY JSON {"pass":true,"issues":[],"repair_instructions":""}. Fail only for MATERIAL problems: not answering the request, changed intent, ignored explicit constraints, fabricated facts/actions, contradictions, or clearly unusable verbosity. Do not fail for minor style. ORIGINAL:\n${request}\nROUTE:\n${JSON.stringify(route)}\nANSWER:\n${answer}`
   });
-  const r = parseJson(result.text);
-  return { qa: { pass: Boolean(r.pass), issues: Array.isArray(r.issues) ? r.issues : [], repair_instructions: String(r.repair_instructions || "") }, call: result };
+  const qa = parseJson(result.text);
+  return { qa: { pass: Boolean(qa.pass), issues: Array.isArray(qa.issues) ? qa.issues : [], repair_instructions: String(qa.repair_instructions || "") }, call: result };
+}
+
+async function runCandidate({ request, route, model }) {
+  const started = Date.now();
+  const calls = [];
+  let repaired = false;
+  try {
+    let executed = await execute({ request, route, executionModel: model });
+    calls.push(executed);
+    let judged = await judgeAnswer({ request, route, answer: executed.text });
+    calls.push(judged.call);
+    let answer = executed.text;
+
+    if (!judged.qa.pass && judged.qa.repair_instructions) {
+      const repairCall = await execute({ request, route, executionModel: model, repair: judged.qa.repair_instructions });
+      calls.push(repairCall);
+      repaired = true;
+      metrics.repairs++;
+      answer = repairCall.text;
+      judged = await judgeAnswer({ request, route, answer });
+      calls.push(judged.call);
+    }
+
+    const elapsedMs = Date.now() - started;
+    const pass = Boolean(judged.qa.pass);
+    updatePerformance({ modelId: model.id, domain: route.domain, depth: route.depth, success: pass, repaired, ms: elapsedMs });
+    return { ok: pass, answer, qa: judged.qa, repaired, calls, elapsedMs, error: pass ? null : "QA failed after repair" };
+  } catch (error) {
+    const elapsedMs = Date.now() - started;
+    updatePerformance({ modelId: model.id, domain: route.domain, depth: route.depth, success: false, repaired, ms: elapsedMs });
+    return { ok: false, answer: "", qa: { pass: false, issues: [error.message], repair_instructions: "" }, repaired, calls, elapsedMs, error: error.message };
+  }
 }
 
 app.get("/api/health", (_req, res) => res.json({
-  ok: true,
-  service: "oracle-stack",
-  mode: "adaptive-multi-model-execution",
-  routingPolicy: ROUTING_POLICY,
-  persistence: storageEnabled() ? "postgres" : "memory",
+  ok: true, service: "oracle-stack", mode: "adaptive-multi-model-execution",
+  routingPolicy: ROUTING_POLICY, persistence: storageEnabled() ? "postgres" : "memory",
   developerApi: apiAuthEnabled() ? "enabled" : "disabled",
-  providers: [...new Set(modelRegistry().map(m => m.provider))],
-  models: modelRegistry().map(m => ({ id: m.id, provider: m.provider, model: m.model }))
+  failover: { enabled: true, maxModels: MAX_FAILOVER_MODELS, providerTimeoutMs: PROVIDER_TIMEOUT_MS },
+  providers: [...new Set(modelRegistry().map(model => model.provider))],
+  models: modelRegistry().map(model => ({ id: model.id, provider: model.provider, model: model.model }))
 }));
 
 app.get("/api/models", (_req, res) => {
@@ -311,14 +315,7 @@ app.get("/api/models", (_req, res) => {
 app.get("/api/metrics", async (_req, res) => {
   let persistentUsage = null;
   try { persistentUsage = await getUsageSummary(30); } catch (error) { console.error("Usage summary failed:", error.message); }
-  res.json({
-    ...metrics,
-    avgMs: metrics.successes ? Math.round(metrics.totalMs / metrics.successes) : 0,
-    avgCalls: metrics.requests ? Number((metrics.calls / metrics.requests).toFixed(2)) : 0,
-    persistence: storageEnabled() ? "postgres" : "memory",
-    persistentUsage30d: persistentUsage,
-    learnedRoutes: [...modelPerformance.entries()].map(([key, value]) => ({ key, ...value }))
-  });
+  res.json({ ...metrics, avgMs: metrics.successes ? Math.round(metrics.totalMs / metrics.successes) : 0, avgCalls: metrics.requests ? Number((metrics.calls / metrics.requests).toFixed(2)) : 0, persistence: storageEnabled() ? "postgres" : "memory", persistentUsage30d: persistentUsage, learnedRoutes: [...modelPerformance.entries()].map(([key, value]) => ({ key, ...value })) });
 });
 
 app.get("/v1/usage", requireApiKey, async (req, res) => {
@@ -326,7 +323,7 @@ app.get("/v1/usage", requireApiKey, async (req, res) => {
   const inMemory = metrics.byApiKey[apiKeyId] || { executions: 0, totalTokens: 0 };
   let persistent = null;
   try { persistent = await getUsageSummary(30, apiKeyId); } catch (error) { console.error("API usage lookup failed:", error.message); }
-  res.json({ apiKeyId, windowDays: 30, currentProcess: inMemory, persistent });
+  res.json({ apiKeyId, windowDays: 30, quota: quotaSnapshot(apiKeyId), currentProcess: inMemory, persistent });
 });
 
 app.post("/api/feedback", async (req, res) => {
@@ -334,14 +331,12 @@ app.post("/api/feedback", async (req, res) => {
   const score = Number(req.body?.score);
   if (!executionId) return res.status(400).json({ error: "executionId is required." });
   if (!Number.isFinite(score) || score < 1 || score > 5) return res.status(400).json({ error: "score must be between 1 and 5." });
-
   let execution = executionIndex.get(executionId);
   if (!execution && storageEnabled()) {
     const row = await findExecution(executionId);
     if (row) execution = { modelId: row.model_id, domain: row.domain, depth: row.depth };
   }
   if (!execution) return res.status(404).json({ error: "Unknown executionId." });
-
   addFeedback(execution.modelId, execution.domain, execution.depth, score);
   if (storageEnabled()) await saveFeedback(executionId, score);
   res.json({ ok: true, executionId, score });
@@ -352,9 +347,8 @@ async function oracleHandler(req, res) {
   const executionId = crypto.randomUUID();
   const apiKeyId = req.oracleApiKeyId || null;
   metrics.requests++;
-  let selectedModel = null;
   let route = null;
-  let repaired = false;
+  let finalModel = null;
 
   try {
     const request = String(req.body?.request || "").trim();
@@ -367,33 +361,38 @@ async function oracleHandler(req, res) {
     metrics.byDomain[route.domain] = (metrics.byDomain[route.domain] || 0) + 1;
     metrics.byDepth[route.depth] = (metrics.byDepth[route.depth] || 0) + 1;
 
-    const modelDecision = selectExecutionModel(route, requestedModel);
-    selectedModel = modelDecision.selected;
-    metrics.byModel[selectedModel.id] = (metrics.byModel[selectedModel.id] || 0) + 1;
+    const decision = selectExecutionModel(route, requestedModel);
+    const candidates = decision.allowFailover ? decision.candidates.slice(0, MAX_FAILOVER_MODELS) : decision.candidates;
+    const attempts = [];
+    let result = null;
 
-    const executed = await execute({ request, route, executionModel: selectedModel });
-    const judged = await judgeAnswer({ request, route, answer: executed.text });
-    let answer = executed.text;
-    let repairCall = null;
-
-    if (!judged.qa.pass && judged.qa.repair_instructions) {
-      repairCall = await execute({ request, route, executionModel: selectedModel, repair: judged.qa.repair_instructions });
-      answer = repairCall.text;
-      repaired = true;
-      metrics.repairs++;
+    for (let index = 0; index < candidates.length; index++) {
+      const model = candidates[index];
+      metrics.byModel[model.id] = (metrics.byModel[model.id] || 0) + 1;
+      const candidateResult = await runCandidate({ request, route, model });
+      attempts.push({ modelId: model.id, provider: model.provider, model: model.model, routingScore: model.routingScore ?? null, ok: candidateResult.ok, repaired: candidateResult.repaired, elapsedMs: candidateResult.elapsedMs, error: candidateResult.error });
+      if (candidateResult.ok) {
+        result = candidateResult;
+        finalModel = model;
+        if (index > 0) metrics.failovers++;
+        break;
+      }
+      if (index < candidates.length - 1 && decision.allowFailover) metrics.failovers++;
     }
+
+    if (!result || !finalModel) throw new Error(`All execution routes failed: ${attempts.map(a => `${a.modelId}: ${a.error}`).join(" | ")}`);
 
     const elapsedMs = Date.now() - requestStarted;
     metrics.successes++;
     metrics.totalMs += elapsedMs;
-    const calls = [routed.call, executed, judged.call, repairCall].filter(Boolean);
-    const inputTokens = calls.reduce((n, c) => n + Number(c.usage?.input_tokens || 0), 0);
-    const outputTokens = calls.reduce((n, c) => n + Number(c.usage?.output_tokens || 0), 0);
+    const calls = [routed.call, ...attempts.flatMap((attempt, i) => i < attempts.length ? [] : [])];
+    const candidateCalls = result.calls || [];
+    const allCalls = [routed.call, ...candidateCalls];
+    const inputTokens = allCalls.reduce((n, call) => n + Number(call?.usage?.input_tokens || 0), 0);
+    const outputTokens = allCalls.reduce((n, call) => n + Number(call?.usage?.output_tokens || 0), 0);
     const totalTokens = inputTokens + outputTokens;
-    const finalPass = repaired ? true : judged.qa.pass;
 
-    updatePerformance({ modelId: selectedModel.id, domain: route.domain, depth: route.depth, success: finalPass, repaired, ms: elapsedMs });
-    executionIndex.set(executionId, { modelId: selectedModel.id, domain: route.domain, depth: route.depth, apiKeyId, createdAt: Date.now() });
+    executionIndex.set(executionId, { modelId: finalModel.id, domain: route.domain, depth: route.depth, apiKeyId, createdAt: Date.now() });
     if (executionIndex.size > 5000) executionIndex.delete(executionIndex.keys().next().value);
 
     if (apiKeyId) {
@@ -404,32 +403,20 @@ async function oracleHandler(req, res) {
     }
 
     const telemetry = {
-      executionId, apiKeyId, elapsedMs, modelCalls: calls.length, inputTokens, outputTokens, totalTokens,
-      specialist: route.domain, depth: route.depth, repaired,
-      provider: selectedModel.provider, model: selectedModel.model, modelId: selectedModel.id,
-      routingPolicy: ROUTING_POLICY, routingReason: modelDecision.reason,
-      routingScore: selectedModel.routingScore ?? null
+      executionId, apiKeyId, elapsedMs, modelCalls: allCalls.length, inputTokens, outputTokens, totalTokens,
+      specialist: route.domain, depth: route.depth, repaired: result.repaired,
+      provider: finalModel.provider, model: finalModel.model, modelId: finalModel.id,
+      routingPolicy: ROUTING_POLICY, routingReason: attempts.length > 1 ? `${decision.reason}_failover` : decision.reason,
+      routingScore: finalModel.routingScore ?? null,
+      failoverCount: Math.max(0, attempts.length - 1),
+      attemptedModels: attempts
     };
 
-    if (storageEnabled()) {
-      saveExecution({ ...telemetry, domain: route.domain, success: finalPass })
-        .catch(error => console.error("Failed to persist execution:", error.message));
-    }
-
+    if (storageEnabled()) saveExecution({ ...telemetry, domain: route.domain, success: true }).catch(error => console.error("Failed to persist execution:", error.message));
     console.log("ORACLE_METRIC", JSON.stringify(telemetry));
-    res.json({
-      original: request,
-      answer,
-      route,
-      model: { id: selectedModel.id, provider: selectedModel.provider, name: selectedModel.model, reason: modelDecision.reason },
-      qa: { pass: finalPass, answerRepaired: repaired, issues: repaired ? [] : judged.qa.issues },
-      telemetry
-    });
+    res.json({ original: request, answer: result.answer, route, model: { id: finalModel.id, provider: finalModel.provider, name: finalModel.model, reason: telemetry.routingReason }, qa: { pass: true, answerRepaired: result.repaired, issues: [] }, telemetry });
   } catch (error) {
     metrics.failures++;
-    if (selectedModel && route) {
-      updatePerformance({ modelId: selectedModel.id, domain: route.domain, depth: route.depth, success: false, repaired, ms: Date.now() - requestStarted });
-    }
     console.error("Oracle request failed:", error);
     res.status(500).json({ executionId, error: error?.message || "Oracle Stack failed to process the request." });
   }
@@ -443,25 +430,10 @@ async function start() {
     const state = await initStorage();
     if (state.enabled) {
       const rows = await loadRoutePerformance();
-      for (const row of rows) {
-        modelPerformance.set(row.route_key, {
-          attempts: Number(row.attempts || 0),
-          successes: Number(row.successes || 0),
-          failures: Number(row.failures || 0),
-          repairs: Number(row.repairs || 0),
-          feedbackTotal: Number(row.feedback_total || 0),
-          feedbackCount: Number(row.feedback_count || 0),
-          avgMs: Number(row.avg_ms || 0)
-        });
-      }
+      for (const row of rows) modelPerformance.set(row.route_key, { attempts: Number(row.attempts || 0), successes: Number(row.successes || 0), failures: Number(row.failures || 0), repairs: Number(row.repairs || 0), feedbackTotal: Number(row.feedback_total || 0), feedbackCount: Number(row.feedback_count || 0), avgMs: Number(row.avg_ms || 0) });
       console.log(`Oracle loaded ${rows.length} learned routes from Postgres.`);
-    } else {
-      console.log("Oracle persistence: in-memory mode (DATABASE_URL not configured).");
-    }
-  } catch (error) {
-    console.error("Oracle persistence unavailable; continuing in memory:", error.message);
-  }
-
+    } else console.log("Oracle persistence: in-memory mode (DATABASE_URL not configured).");
+  } catch (error) { console.error("Oracle persistence unavailable; continuing in memory:", error.message); }
   app.listen(PORT, () => console.log(`Oracle Stack listening on port ${PORT}`));
 }
 
