@@ -5,59 +5,54 @@ Oracle Stack is an adaptive AI execution layer. A user or application sends Orac
 ## V2 flow
 
 1. **Oracle Router** identifies intent, domain, complexity, and minimum execution depth.
-2. **Adaptive Model Router** scores the configured execution models using:
-   - domain fit
-   - quality prior
-   - speed prior
-   - cost prior
-   - observed Oracle performance for that domain/depth
+2. **Adaptive Model Router** scores configured execution models using domain fit, quality, speed, cost, and learned performance.
 3. A **specialist agent** executes the request using the selected provider/model.
 4. **Judge / QA** checks the answer for material failures.
-5. If QA fails, the same specialist gets one automatic repair pass.
+5. If QA fails, the specialist gets one automatic repair pass.
 6. Oracle records latency, token usage, model selection, repairs, success/failure, and user feedback.
 7. Future requests use those results as part of their routing score.
 
-Specialist domains:
-
-- Business
-- Research
-- Writing
-- Coding
-- Career
-- General fallback
+Specialist domains: Business, Research, Writing, Coding, Career, and General fallback.
 
 ## Providers
 
-OpenAI remains the default and is used for Oracle routing and final QA. Execution can currently be routed to:
-
-- OpenAI
-- Anthropic (optional)
-- Gemini (optional)
-
-Optional providers are enabled only when both their API key and model name are configured. This keeps the existing OpenAI-only deployment working without changes.
+OpenAI remains the default and is used for Oracle routing and final QA. Execution can be routed to OpenAI, Anthropic, and Gemini when those providers are configured.
 
 ## Routing policies
 
-Set `ROUTING_POLICY` to one of:
+Set `ROUTING_POLICY` to `quality`, `balanced`, or `cost`. Provider priors in `.env.example` are starting assumptions; learned route performance increasingly influences selection as Oracle accumulates outcomes.
 
-- `quality` — favor output quality and learned success
-- `balanced` — balance quality, speed, cost, and learned success (default)
-- `cost` — put more weight on cheaper execution while still considering quality and learned success
+## Persistent learning
 
-The numeric provider priors in `.env.example` are starting assumptions only. Oracle's observed performance score increasingly influences selection as executions and user feedback accumulate.
+Oracle now supports optional Postgres persistence through `DATABASE_URL`.
 
-> V2 learning state is currently held in memory. It resets when the server restarts. Persistent performance history should move to Postgres/Redis after the routing behavior is validated.
+When Postgres is configured Oracle automatically creates and uses:
+
+- `oracle_route_performance` — durable learned performance by model/domain/depth
+- `oracle_executions` — execution history including provider, model, route, QA outcome, latency, tokens, repairs, and user feedback
+
+At startup Oracle hydrates its in-memory routing cache from Postgres. That keeps routing fast while allowing learned behavior to survive deploys and restarts. If `DATABASE_URL` is absent or storage initialization fails, Oracle continues in memory rather than preventing the service from starting.
 
 ## Local setup
 
 ```bash
 npm install
 cp .env.example .env
-# add OPENAI_API_KEY and optionally additional provider keys/models
+# add OPENAI_API_KEY and optionally provider keys/models + DATABASE_URL
 npm start
 ```
 
 Open `http://localhost:3000`.
+
+## Benchmarking
+
+Run the repeatable benchmark suite against a running Oracle instance:
+
+```bash
+npm run benchmark
+```
+
+Set `ORACLE_BENCHMARK_URL` to benchmark a deployed instance instead of localhost.
 
 ## API
 
@@ -65,13 +60,13 @@ Open `http://localhost:3000`.
 
 `GET /api/health`
 
-Returns the routing mode, policy, configured providers, and available models.
+Returns routing mode, policy, persistence mode, configured providers, and models.
 
 ### Available models
 
 `GET /api/models`
 
-Returns the configured execution models and their routing priors.
+Returns configured execution models and routing priors.
 
 ### Execute a request
 
@@ -83,16 +78,9 @@ Returns the configured execution models and their routing priors.
 }
 ```
 
-Oracle automatically chooses the execution model. For testing, a caller can explicitly request a configured model by its registry ID or model name:
+Oracle chooses the execution model automatically. For benchmark/testing purposes a caller can explicitly request a configured model by registry ID or model name.
 
-```json
-{
-  "request": "Refactor this JavaScript function",
-  "model": "openai:gpt-5.6"
-}
-```
-
-The response includes the finished answer plus route, QA, selected-model, and telemetry information. Telemetry includes an `executionId` that can be used for feedback.
+The response includes the answer, route, QA result, selected model, and telemetry. Telemetry includes an `executionId` used for feedback.
 
 ### Submit outcome feedback
 
@@ -105,16 +93,16 @@ The response includes the finished answer plus route, QA, selected-model, and te
 }
 ```
 
-Scores are 1–5 and feed the adaptive routing score for that model/domain/depth combination.
+Scores are 1–5. With Postgres enabled feedback still works after a service restart because Oracle can recover the execution record from durable storage.
 
-### Metrics and learning state
+### Metrics and usage
 
 `GET /api/metrics`
 
-Returns aggregate request/token/latency metrics plus learned route statistics.
+Returns current-process metrics, learned route statistics, persistence mode, and a 30-day durable execution summary when Postgres is enabled.
 
 ## Product direction
 
-Oracle Stack is not intended to be another model picker or prompt enhancer. The target product is a single execution API that chooses the model, specialist, and reasoning depth that best fit a task, checks the result, learns from outcomes, and improves routing over time.
+Oracle Stack is not intended to be another model picker or prompt enhancer. The target is a single execution API that chooses the model, specialist, and reasoning depth that best fit a task, checks the result, learns from outcomes, and improves routing over time.
 
-The next infrastructure milestones are persistent performance storage, API authentication/usage limits, true cost accounting, benchmarking across providers, and production-grade fallback/retry routing.
+Next infrastructure milestones: API authentication and per-key usage limits, real provider cost accounting, production fallback/retry routing, and benchmark-driven tuning of routing weights.
