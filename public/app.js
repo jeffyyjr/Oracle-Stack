@@ -26,6 +26,46 @@ function resetFeedback() {
   feedbackStatus.textContent = "";
   feedbackButtons.forEach(button => { button.disabled = false; });
 }
+function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+async function parseResponse(response) {
+  const raw = await response.text();
+  if (!raw) return {};
+  try { return JSON.parse(raw); }
+  catch {
+    if (!response.ok) throw new Error(`Oracle returned HTTP ${response.status}. Please try again.`);
+    throw new Error("Oracle returned an unreadable response. Please try again.");
+  }
+}
+
+async function callOracle(request) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const response = await fetch("/api/oracle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ request }),
+        cache: "no-store"
+      });
+      const data = await parseResponse(response);
+      if (!response.ok) {
+        const message = data.error || `Oracle Stack failed with HTTP ${response.status}.`;
+        const error = new Error(message);
+        error.status = response.status;
+        throw error;
+      }
+      return data;
+    } catch (error) {
+      lastError = error;
+      const transient = !error.status || [408, 425, 429, 500, 502, 503, 504].includes(error.status);
+      if (!transient || attempt === 2) break;
+      setStatus("Oracle hit a temporary connection problem. Retrying once…");
+      await sleep(900);
+    }
+  }
+  throw lastError || new Error("Oracle Stack failed.");
+}
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -37,29 +77,31 @@ form.addEventListener("submit", async (event) => {
   resetFeedback();
   setStatus("Oracle is routing, executing, and checking your work…");
   try {
-    const response = await fetch("/api/oracle", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request }) });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Oracle Stack failed.");
+    const data = await callOracle(request);
     currentExecutionId = data.telemetry?.executionId || "";
-    answerOutput.textContent = data.answer;
-    domainBadge.textContent = `${data.route.domain} specialist`;
+    answerOutput.textContent = data.answer || "Oracle completed the request but returned no answer text.";
+    domainBadge.textContent = `${data.route?.domain || "general"} specialist`;
     modelBadge.textContent = data.model?.name || data.telemetry?.model || "auto model";
-    qaBadge.textContent = data.qa.pass ? "QA passed" : "QA flagged";
-    qaBadge.className = `badge ${data.qa.pass ? "good" : "warn"}`;
-    routeTask.textContent = data.route.task || "—";
-    routeGoal.textContent = data.route.goal || "—";
-    routeComplexity.textContent = `${data.route.depth || "normal"} · ${data.route.complexity || "standard"}`;
+    const qaPassed = Boolean(data.qa?.pass);
+    qaBadge.textContent = qaPassed ? "QA passed" : "QA flagged";
+    qaBadge.className = `badge ${qaPassed ? "good" : "warn"}`;
+    routeTask.textContent = data.route?.task || "—";
+    routeGoal.textContent = data.route?.goal || "—";
+    routeComplexity.textContent = `${data.route?.depth || "normal"} · ${data.route?.complexity || "standard"}`;
     routeModel.textContent = data.model ? `${data.model.provider} · ${data.model.name}` : "—";
     routeReason.textContent = data.telemetry?.routingReason ? `${data.telemetry.routingReason}${data.telemetry.routingScore != null ? ` · score ${data.telemetry.routingScore}` : ""}` : "Oracle selected automatically";
     const repairs = [];
-    if (data.qa.planRepaired) repairs.push("planning repaired automatically");
-    if (data.qa.answerRepaired) repairs.push("final answer repaired automatically");
-    routeQa.textContent = data.qa.pass ? (repairs.length ? `Passed after ${repairs.join(" and ")}.` : "Final-answer QA passed.") : (data.qa.issues?.join(" ") || "Oracle still has QA concerns.");
+    if (data.qa?.planRepaired) repairs.push("planning repaired automatically");
+    if (data.qa?.answerRepaired) repairs.push("final answer repaired automatically");
+    routeQa.textContent = qaPassed ? (repairs.length ? `Passed after ${repairs.join(" and ")}.` : "Final-answer QA passed.") : (data.qa?.issues?.join(" ") || "Oracle still has QA concerns.");
     hideStatus();
     result.classList.remove("hidden");
-    result.scrollIntoView({ behavior: "smooth", block: "start" });
+    try { result.scrollIntoView({ behavior: "smooth", block: "start" }); } catch { result.scrollIntoView(); }
   } catch (error) {
-    setStatus(error.message || "Something went wrong.", "error");
+    const message = error?.message && !/expected pattern/i.test(error.message)
+      ? error.message
+      : "Oracle hit a temporary browser or network error. Please try again.";
+    setStatus(message, "error");
   } finally { submitBtn.disabled = false; }
 });
 
@@ -75,7 +117,7 @@ feedbackButtons.forEach(button => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ executionId: currentExecutionId, score })
       });
-      const data = await response.json();
+      const data = await parseResponse(response);
       if (!response.ok) throw new Error(data.error || "Feedback failed.");
       feedbackStatus.textContent = `Saved ${score}/5 — Oracle will use it for routing.`;
     } catch (error) {
