@@ -1,6 +1,6 @@
 {
   "name": "oracle-stack",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Adaptive AI execution layer that routes work across models and specialists, quality-checks results, and learns from outcomes.",
   "type": "module",
@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "dotenv": "^16.4.7",
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "pg": "^8.13.1"
   }
 }
