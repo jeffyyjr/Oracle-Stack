@@ -214,6 +214,23 @@ async function repairArtifactLoop({ request, spec, artifactRun, model }) {
   if(current.status==="MATERIALIZED")return finalizeArtifact({workspace:current.workspace,opportunity:spec.opportunity,status:current.status,files:current.files,tests:current.tests,repairAttempts:attempts});
   return current;
 }
+function wantsArtifactImprovement(request) {
+  return /(?:improve|upgrade|revise|modify|extend|update|iterate|previous build|last build|artifact memory)/i.test(request);
+}
+async function latestArtifactForRequest(request) {
+  if(!storageEnabled()) return null;
+  const explicit=String(request).match(/\b\d{13}-[a-f0-9]{8}-[a-z0-9._-]+\b/i);
+  if(explicit) return loadArtifactBundle(explicit[0]);
+  const rows=await listArtifacts(10);
+  if(!rows.length) return null;
+  const rail=/railcall/i.test(request);
+  const chosen=(rail?rows.find(x=>/railcall/i.test(x.opportunity)):null)||rows[0];
+  return loadArtifactBundle(chosen.workspace_id);
+}
+function artifactImprovementPrompt({request,artifact}) {
+  const prior={workspace_id:artifact.workspace_id,opportunity:artifact.opportunity,manifest:artifact.manifest,files:artifact.files.map(f=>({path:f.path,content:f.content})),tests:artifact.tests};
+  return `You are Oracle's artifact improvement compiler. Improve an EXISTING persisted credential-free prototype instead of rebuilding blindly. Preserve working behavior unless the request requires a change. Return ONLY valid JSON with schema {"opportunity":"short-name","files":[{"path":"relative/path","content":"complete file contents"}],"testCommands":[["node","--test"]]}. Return a COMPLETE new version containing every file needed for the improved build, not a patch. Include tests for changed behavior. Maximum 12 files. Never claim tests ran; Oracle will materialize and execute them. USER REQUEST:\n${request}\nPERSISTED PRIOR BUILD:\n${JSON.stringify(prior)}`;
+}
 function wantsArtifactExecution(request, route) {
   return /(?:execute|build|materialize|prototype|prebuild|artifact)/i.test(request) && /(?:railcall|pass|opportunit|tech|automation|backend|ai)/i.test(request);
 }
@@ -275,9 +292,15 @@ async function oracleHandler(req, res) {
     let artifactRun = null;
     if (wantsArtifactExecution(effectiveRequest, route)) {
       try {
-        const artifactCall = await callProvider({ provider: finalModel.provider, model: finalModel.model, effort: "low", maxOutputTokens: 5000, timeoutMs: Math.max(REVENUE_PROVIDER_TIMEOUT_MS, 60000), prompt: forcedArtifactPrompt({ request: effectiveRequest, route, marketEvidence }) });
+        let priorArtifact = null;
+        if (wantsArtifactImprovement(effectiveRequest)) priorArtifact = await latestArtifactForRequest(effectiveRequest);
+        const compilePrompt = priorArtifact
+          ? artifactImprovementPrompt({ request: effectiveRequest, artifact: priorArtifact })
+          : forcedArtifactPrompt({ request: effectiveRequest, route, marketEvidence });
+        const artifactCall = await callProvider({ provider: finalModel.provider, model: finalModel.model, effort: "low", maxOutputTokens: 5000, timeoutMs: Math.max(REVENUE_PROVIDER_TIMEOUT_MS, 60000), prompt: compilePrompt });
         const spec = parseJson(artifactCall.text);
         artifactRun = await materializeExecutionArtifacts(spec);
+        if (priorArtifact) artifactRun.parentWorkspace = priorArtifact.workspace_id;
         if (artifactRun.status === "QA_FAILED") artifactRun = await repairArtifactLoop({ request: effectiveRequest, spec, artifactRun, model: finalModel });
         const executionSummary = artifactRun.status === "MATERIALIZED"
           ? "## Execution complete\nOracle materialized the generated prebuild and ran the workspace QA commands. The execution results below are authoritative."
