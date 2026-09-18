@@ -197,7 +197,7 @@ function forcedArtifactPrompt({ request, route, marketEvidence }) {
   return `You are Oracle's artifact compiler. Generate a SMALL, COMPLETE, credential-free Node.js prototype for the qualified technical opportunity described below. You do not need filesystem, shell, repository, buyer credentials, or prior files. Choose safe labeled assumptions. Return ONLY valid JSON, no markdown, with schema {"opportunity":"short-name","files":[{"path":"relative/path","content":"exact complete file contents"}],"testCommands":[["node","--test"]]}. Include package.json, implementation, README, and tests. Maximum 12 files. Never claim tests ran; Oracle's server-side runner will run them after parsing this JSON.\nREQUEST:\n${request}\nROUTE:\n${JSON.stringify(route)}\nEVIDENCE:\n${evidencePromptBlock(marketEvidence)}`;
 }
 function wantsArtifactExecution(request, route) {
-  return route.domain === "revenue" && /(?:execute|build|materialize|prototype|prebuild|artifact)/i.test(request) && /(?:railcall|pass|opportunit|tech|automation|backend|ai)/i.test(request);
+  return /(?:execute|build|materialize|prototype|prebuild|artifact)/i.test(request) && /(?:railcall|pass|opportunit|tech|automation|backend|ai)/i.test(request);
 }
 async function runCandidate({ request, route, model, marketEvidence = null }) {
   const started = Date.now(); const calls = []; let repaired = false;
