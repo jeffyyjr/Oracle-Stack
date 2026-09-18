@@ -11,6 +11,7 @@ import { discoverMarketEvidence, evidencePromptBlock, discoveryEnabled } from ".
 import { techHunterInstructions } from "./agents/tech-problem-hunter.js";
 import { techFixerInstructions } from "./agents/tech-fixer.js";
 import { dealQualifierInstructions } from "./agents/deal-qualifier.js";
+import { executionAgentInstructions } from "./agents/execution-agent.js";
 import {
   initStorage, storageEnabled, loadRoutePerformance, saveRoutePerformance,
   saveExecution, findExecution, saveFeedback, getUsageSummary
