@@ -15,7 +15,7 @@ import { executionAgentInstructions } from "./agents/execution-agent.js";
 import { materializeExecutionArtifacts, applyArtifactRepairs, rerunArtifactTests, finalizeArtifact } from "./artifact-workspace.js";
 import {
   initStorage, storageEnabled, loadRoutePerformance, saveRoutePerformance,
-  saveExecution, findExecution, saveFeedback, getUsageSummary
+  saveExecution, findExecution, saveFeedback, getUsageSummary, listArtifacts, loadArtifactBundle
 } from "./storage.js";
 
 const app = express();
@@ -225,6 +225,16 @@ async function runCandidate({ request, route, model, marketEvidence = null }) {
   } catch (error) { const elapsedMs = Date.now() - started; updatePerformance({ modelId: model.id, domain: route.domain, depth: route.depth, success: false, repaired, ms: elapsedMs }); return { ok: false, answer: "", qa: { pass: false, issues: [error.message], repair_instructions: "" }, repaired, calls, elapsedMs, error: error.message }; }
 }
 app.get("/api/health", (_req, res) => res.json({ ok: true, service: "oracle-stack", mode: "adaptive-multi-model-execution", liveMarketDiscovery: discoveryEnabled(), routingPolicy: ROUTING_POLICY, persistence: storageEnabled() ? "postgres" : "memory", developerApi: apiAuthEnabled() ? "enabled" : "disabled", failover: { enabled: true, maxModels: MAX_FAILOVER_MODELS, providerTimeoutMs: PROVIDER_TIMEOUT_MS, revenueProviderTimeoutMs: REVENUE_PROVIDER_TIMEOUT_MS, revenueHedging: true, revenueHedgeDelayMs: Math.max(1000, Number(process.env.REVENUE_HEDGE_DELAY_MS || 5000)) }, providers: [...new Set(modelRegistry().map(model => model.provider))], models: modelRegistry().map(model => ({ id: model.id, provider: model.provider, model: model.model })) }));
+app.get("/api/artifacts", async (req,res) => {
+  if(!storageEnabled()) return res.status(503).json({error:"Postgres persistence is not enabled."});
+  try { res.json({artifacts:await listArtifacts(req.query.limit)}); }
+  catch(error){ res.status(500).json({error:error.message}); }
+});
+app.get("/api/artifacts/:workspaceId", async (req,res) => {
+  if(!storageEnabled()) return res.status(503).json({error:"Postgres persistence is not enabled."});
+  try { const artifact=await loadArtifactBundle(req.params.workspaceId); if(!artifact)return res.status(404).json({error:"Artifact not found."}); res.json(artifact); }
+  catch(error){ res.status(500).json({error:error.message}); }
+});
 app.get("/api/models", (_req, res) => { const models = modelRegistry().map(({ id, provider, model, strengths, quality, speed, cost }) => ({ id, provider, model, strengths, quality, speed, cost })); res.json({ policy: ROUTING_POLICY, models }); });
 app.get("/api/metrics", async (_req, res) => { let persistentUsage = null; try { persistentUsage = await getUsageSummary(30); } catch (error) { console.error("Usage summary failed:", error.message); } res.json({ ...metrics, avgMs: metrics.successes ? Math.round(metrics.totalMs / metrics.successes) : 0, avgCalls: metrics.requests ? Number((metrics.calls / metrics.requests).toFixed(2)) : 0, persistence: storageEnabled() ? "postgres" : "memory", persistentUsage30d: persistentUsage, learnedRoutes: [...modelPerformance.entries()].map(([key, value]) => ({ key, ...value })) }); });
 app.get("/v1/usage", requireApiKey, async (req, res) => { const apiKeyId = req.oracleApiKeyId; const inMemory = metrics.byApiKey[apiKeyId] || { executions: 0, totalTokens: 0 }; let persistent = null; try { persistent = await getUsageSummary(30, apiKeyId); } catch (error) { console.error("API usage lookup failed:", error.message); } res.json({ apiKeyId, windowDays: 30, quota: quotaSnapshot(apiKeyId), currentProcess: inMemory, persistent }); });
