@@ -58,6 +58,8 @@ export async function initStorage() {
     );
     CREATE INDEX IF NOT EXISTS oracle_artifacts_created_at_idx ON oracle_artifacts(created_at DESC);
     CREATE INDEX IF NOT EXISTS oracle_artifact_runs_workspace_idx ON oracle_artifact_runs(workspace_id, id);
+    ALTER TABLE oracle_artifacts ADD COLUMN IF NOT EXISTS parent_workspace_id TEXT;
+    CREATE INDEX IF NOT EXISTS oracle_artifacts_parent_idx ON oracle_artifacts(parent_workspace_id);
   `);
   enabled = true;
   return { enabled: true };
