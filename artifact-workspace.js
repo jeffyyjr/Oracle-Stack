@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
+import { storageEnabled, saveArtifactBundle } from "./storage.js";
 
 const ROOT = process.env.ORACLE_WORKSPACE_DIR || "/tmp/oracle-workspaces";
 const ARCHIVE_ROOT = process.env.ORACLE_ARTIFACT_ARCHIVE_DIR || path.join(process.cwd(), "oracle-artifacts");
@@ -31,10 +32,11 @@ export async function materializeExecutionArtifacts({ opportunity="work", files=
   const id=`${Date.now()}-${crypto.randomUUID().slice(0,8)}-${safeName(opportunity)}`;
   const dir=path.join(ROOT,id); await fs.mkdir(dir,{recursive:true});
   let bytes=0, written=[];
+  const durableFiles=[];
   for (const f of files) {
     const rel=safeRel(f.path), body=String(f.content ?? "");
     bytes+=Buffer.byteLength(body); if(bytes>MAX_BYTES) throw new Error("artifact byte limit exceeded");
-    const target=path.join(dir,rel); await fs.mkdir(path.dirname(target),{recursive:true}); await fs.writeFile(target,body,"utf8"); written.push(rel);
+    const target=path.join(dir,rel); await fs.mkdir(path.dirname(target),{recursive:true}); await fs.writeFile(target,body,"utf8"); written.push(rel); durableFiles.push({path:rel,content:body});
   }
   const allowed=(Array.isArray(testCommands)?testCommands:[]).slice(0,6).filter(x=>Array.isArray(x)&&["node","npm","python3"].includes(x[0]));
   const tests=[]; for(const c of allowed) tests.push(await run(c[0],c.slice(1),dir));
@@ -47,6 +49,10 @@ export async function materializeExecutionArtifacts({ opportunity="work", files=
     const manifest={workspace:id,opportunity:safeName(opportunity),createdAt:new Date().toISOString(),files:written,tests};
     await fs.writeFile(path.join(archiveDir,"oracle-manifest.json"),JSON.stringify(manifest,null,2),"utf8");
     archive=archiveDir;
+    if(storageEnabled()) {
+      const manifest={workspace:id,opportunity:safeName(opportunity),createdAt:new Date().toISOString(),files:written,tests};
+      await saveArtifactBundle({workspaceId:id,opportunity:safeName(opportunity),status,manifest,files:durableFiles,tests});
+    }
   }
-  return {status,workspace:id,archive,files:written,tests};
+  return {status,workspace:id,archive,postgresPersisted:status==="MATERIALIZED"&&storageEnabled(),files:written,tests};
 }
