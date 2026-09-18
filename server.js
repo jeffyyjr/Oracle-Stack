@@ -193,6 +193,12 @@ async function judgeAnswer({ request, route, answer }) {
   const result = await callProvider({ provider: "openai", model: JUDGE_MODEL, maxOutputTokens: 400, prompt: `You are Oracle final QA. Return ONLY JSON {"pass":true,"issues":[],"repair_instructions":""}. Fail only for MATERIAL problems: not answering the request, changed intent, ignored explicit constraints, fabricated facts/actions, contradictions, or clearly unusable verbosity. Do not fail for minor style. ORIGINAL:\n${request}\nROUTE:\n${JSON.stringify(route)}\nANSWER:\n${answer}` });
   const qa = parseJson(result.text); return { qa: { pass: Boolean(qa.pass), issues: Array.isArray(qa.issues) ? qa.issues : [], repair_instructions: String(qa.repair_instructions || "") }, call: result };
 }
+function forcedArtifactPrompt({ request, route, marketEvidence }) {
+  return `You are Oracle's artifact compiler. Generate a SMALL, COMPLETE, credential-free Node.js prototype for the qualified technical opportunity described below. You do not need filesystem, shell, repository, buyer credentials, or prior files. Choose safe labeled assumptions. Return ONLY valid JSON, no markdown, with schema {"opportunity":"short-name","files":[{"path":"relative/path","content":"exact complete file contents"}],"testCommands":[["node","--test"]]}. Include package.json, implementation, README, and tests. Maximum 12 files. Never claim tests ran; Oracle's server-side runner will run them after parsing this JSON.\nREQUEST:\n${request}\nROUTE:\n${JSON.stringify(route)}\nEVIDENCE:\n${evidencePromptBlock(marketEvidence)}`;
+}
+function wantsArtifactExecution(request, route) {
+  return route.domain === "revenue" && /(?:execute|build|materialize|prototype|prebuild|artifact)/i.test(request) && /(?:railcall|pass|opportunit|tech|automation|backend|ai)/i.test(request);
+}
 async function runCandidate({ request, route, model, marketEvidence = null }) {
   const started = Date.now(); const calls = []; let repaired = false;
   try { let executed = await execute({ request, route, executionModel: model, marketEvidence }); calls.push(executed); let judged = await judgeAnswer({ request, route, answer: executed.text }); calls.push(judged.call); let answer = executed.text;
@@ -239,7 +245,17 @@ async function oracleHandler(req, res) {
     }
     if (!result || !finalModel) throw new Error(`All execution routes failed: ${attempts.map(a => `${a.modelId}: ${a.error}`).join(" | ")}`);
     let artifactRun = null;
-    if (route.domain === "revenue") {
+    if (wantsArtifactExecution(effectiveRequest, route)) {
+      try {
+        const artifactCall = await callProvider({ provider: finalModel.provider, model: finalModel.model, effort: "low", maxOutputTokens: 5000, timeoutMs: REVENUE_PROVIDER_TIMEOUT_MS, prompt: forcedArtifactPrompt({ request: effectiveRequest, route, marketEvidence }) });
+        const spec = parseJson(artifactCall.text);
+        artifactRun = await materializeExecutionArtifacts(spec);
+        result.answer = result.answer.trim() + "\n\n## Execution workspace\n" + JSON.stringify(artifactRun, null, 2);
+      } catch (error) {
+        artifactRun = { status: "QA_FAILED", error: error.message };
+        result.answer = result.answer.trim() + "\n\n## Execution workspace\n" + JSON.stringify(artifactRun, null, 2);
+      }
+    } else if (route.domain === "revenue") {
       const match = result.answer.match(/\`\`\`(?:json)?\\s*ORACLE_ARTIFACTS\\s*([\\s\\S]*?)\`\`\`/i)
         || result.answer.match(/ORACLE_ARTIFACTS\\s*([\\{][\\s\\S]*?[\\}])\\s*$/i);
       if (match) {
