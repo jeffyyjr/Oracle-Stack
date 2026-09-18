@@ -60,7 +60,9 @@ export async function discoverMarketEvidence(request, { count = 14 } = {}) {
   const querySpecs = techIntent ? [
     { channel: "github", signalType: "demand", q: `site:github.com/issues ${goal} ("need help" OR "help wanted" OR "bug" OR "feature request" OR "looking for")` },
     { channel: "reddit", signalType: "demand", q: `site:reddit.com ${goal} ("need help" OR "looking for someone" OR "how do I fix" OR "will pay" OR "hire")` },
-    { channel: "freelance_jobs", signalType: "demand", q: `${goal} (site:upwork.com/freelance-jobs OR site:freelancer.com/projects OR site:peopleperhour.com/freelance-jobs) ("looking for" OR "need" OR "seeking")` },
+    { channel: "upwork", signalType: "demand", q: `site:upwork.com/freelance-jobs/apply/ ${goal} ("Fixed Price" OR hourly OR budget) -academic -assignment -homework` },
+    { channel: "freelancer", signalType: "demand", q: `site:freelancer.com/projects/ ${goal} (budget OR "$" OR "fixed") -academic -assignment -homework` },
+    { channel: "peopleperhour", signalType: "demand", q: `site:peopleperhour.com/freelance-jobs/ ${goal} (budget OR fixed OR hourly) -academic -assignment -homework` },
     { channel: "public_rfp", signalType: "demand", q: `${goal} ("request for proposal" OR RFP OR tender OR procurement OR "request for quote") software technology` },
     // Fiverr is primarily supply/competition evidence. Use it to package and price an offer, never as proof of a buyer.
     { channel: "fiverr", signalType: "supply_competition", q: `site:fiverr.com ${goal} (software OR automation OR API OR AI OR bug OR integration)` }
@@ -72,17 +74,18 @@ export async function discoverMarketEvidence(request, { count = 14 } = {}) {
   const queries = querySpecs.map(x => x.q);
   const provider = process.env.BRAVE_SEARCH_API_KEY ? "brave" : "serper";
   const search = provider === "brave" ? searchBrave : searchSerper;
-  const perQuery = techIntent ? 6 : Math.max(4, Math.ceil(count / 2));
+  const perQuery = techIntent ? 5 : Math.max(4, Math.ceil(count / 2));
   const batches = await Promise.allSettled(querySpecs.map(spec => search(spec.q, perQuery, spec.channel, spec.signalType)));
   const seen = new Set(), results = [];
   const looksLikeListing = (item) => {
     const u = String(item?.url || "").toLowerCase();
     const t = `${item?.title || ""} ${item?.snippet || ""}`.toLowerCase();
     if (item?.signalType !== "demand") return true;
-    if (item?.channel === "freelance_jobs") {
-      const detailPath = /\/freelance-jobs\/(apply\/|technology-|[^/]+-\d+)/.test(u) || /\/projects\//.test(u);
-      const commercialText = /(fixed-price|hourly|budget|\$\d|£\d|€\d|posted|proposals|hiring|looking for|we need|seeking)/.test(t);
-      return detailPath && commercialText;
+    if (["upwork","freelancer","peopleperhour"].includes(item?.channel)) {
+      const detailPath = /upwork\.com\/freelance-jobs\/apply\//.test(u) || /freelancer\.com\/projects\//.test(u) || /peopleperhour\.com\/freelance-jobs\//.test(u);
+      const commercialText = /(fixed-price|fixed price|hourly|budget|\$\s?\d|£\s?\d|€\s?\d|posted|proposals|hiring|looking for|we need|seeking)/.test(t);
+      const academicRisk = /(homework|school assignment|college assignment|university assignment|coursework|exam help)/.test(t);
+      return detailPath && commercialText && !academicRisk;
     }
     if (item?.channel === "github") return /\/issues\/\d+/.test(u);
     if (item?.channel === "reddit") return /\/comments\//.test(u) && /(hire|hiring|paid|budget|looking for someone|need someone|will pay)/.test(t);
