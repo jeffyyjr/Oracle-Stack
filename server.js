@@ -104,7 +104,7 @@ function parseJson(text) {
   }
 }
 function normalizeUsage(usage = {}) { return { input_tokens: Number(usage.input_tokens || usage.prompt_tokens || usage.inputTokens || 0), output_tokens: Number(usage.output_tokens || usage.completion_tokens || usage.outputTokens || 0) }; }
-async function fetchWithTimeout(url, options) {
+async function fetchWithTimeout(url, options = {}, timeoutMs = PROVIDER_TIMEOUT_MS) {
   const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), timeoutMs);
   try { return await fetch(url, { ...options, signal: controller.signal }); }
   catch (error) { if (error?.name === "AbortError") throw new Error(`Provider timed out after ${timeoutMs}ms`); throw error; }
