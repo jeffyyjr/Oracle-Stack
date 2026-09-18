@@ -12,6 +12,7 @@ import { techHunterInstructions } from "./agents/tech-problem-hunter.js";
 import { techFixerInstructions } from "./agents/tech-fixer.js";
 import { dealQualifierInstructions } from "./agents/deal-qualifier.js";
 import { executionAgentInstructions } from "./agents/execution-agent.js";
+import { materializeExecutionArtifacts } from "./artifact-workspace.js";
 import {
   initStorage, storageEnabled, loadRoutePerformance, saveRoutePerformance,
   saveExecution, findExecution, saveFeedback, getUsageSummary
@@ -161,7 +162,7 @@ function techRevenueInstructions(request, route) {
   if (route.domain !== "revenue") return "";
   const techIntent = /tech|software|saas|app|website|api|integration|automation|deploy|bug|code|data|ai|computer/i.test(request);
   if (!techIntent) return "";
-  return `\n${techHunterInstructions()}\nHANDOFF WHEN QUALIFIED:\n${techFixerInstructions()}\nREVENUE HANDOFF: After feasibility, identify pricing inputs and the next authorized action. Do not claim outreach, delivery, or revenue unless it actually occurred.`;
+  return `\nTECH HUNTER:\n${JSON.stringify(techHunterInstructions)}\nDEAL QUALIFIER:\n${JSON.stringify(dealQualifierInstructions)}\nTECH FIXER:\n${JSON.stringify(techFixerInstructions)}\nEXECUTION AGENT:\n${JSON.stringify(executionAgentInstructions)}\nWhen the user explicitly asks to build/create/execute a credential-free prebuild for a PASS opportunity, end your answer with a machine-readable fenced JSON block named ORACLE_ARTIFACTS using schema {"opportunity":"short-name","files":[{"path":"relative/path","content":"exact file contents"}],"testCommands":[["node","--test"]]}. Keep it under 30 files and 250KB. Do not emit this block for ordinary opportunity scans.\nREVENUE HANDOFF: After feasibility, identify pricing inputs and the next authorized action. Do not claim outreach, delivery, or revenue unless it actually occurred.`;
 }
 
 function revenueInstructions(request, route) {
@@ -231,10 +232,24 @@ async function oracleHandler(req, res) {
       for (let index = 0; index < candidates.length; index++) { const model = candidates[index]; metrics.byModel[model.id] = (metrics.byModel[model.id] || 0) + 1; const candidateResult = await runCandidate({ request, route, model, marketEvidence }); attempts.push({ modelId: model.id, provider: model.provider, model: model.model, routingScore: model.routingScore ?? null, ok: candidateResult.ok, repaired: candidateResult.repaired, elapsedMs: candidateResult.elapsedMs, error: candidateResult.error, hedged: false }); if (candidateResult.ok) { result = candidateResult; finalModel = model; break; } if (index < candidates.length - 1 && decision.allowFailover) metrics.failovers++; }
     }
     if (!result || !finalModel) throw new Error(`All execution routes failed: ${attempts.map(a => `${a.modelId}: ${a.error}`).join(" | ")}`);
+    let artifactRun = null;
+    if (route.domain === "revenue") {
+      const match = result.answer.match(/\`\`\`json\s*ORACLE_ARTIFACTS\s*([\\s\\S]*?)\`\`\`/i);
+      if (match) {
+        try {
+          const spec = JSON.parse(match[1]);
+          artifactRun = await materializeExecutionArtifacts(spec);
+          result.answer = result.answer.replace(match[0], "").trim() + "\n\n## Execution workspace\n" + JSON.stringify(artifactRun, null, 2);
+        } catch (error) {
+          artifactRun = { status: "QA_FAILED", error: error.message };
+          result.answer = result.answer.replace(match[0], "").trim() + "\n\n## Execution workspace\n" + JSON.stringify(artifactRun, null, 2);
+        }
+      }
+    }
     const elapsedMs = Date.now() - requestStarted; metrics.successes++; metrics.totalMs += elapsedMs; const allCalls = [routed.call, ...(result.calls || [])]; const inputTokens = allCalls.reduce((n, call) => n + Number(call?.usage?.input_tokens || 0), 0); const outputTokens = allCalls.reduce((n, call) => n + Number(call?.usage?.output_tokens || 0), 0); const totalTokens = inputTokens + outputTokens;
     executionIndex.set(executionId, { modelId: finalModel.id, domain: route.domain, depth: route.depth, apiKeyId, createdAt: Date.now() }); if (executionIndex.size > 5000) executionIndex.delete(executionIndex.keys().next().value);
     if (apiKeyId) { const usage = metrics.byApiKey[apiKeyId] || { executions: 0, totalTokens: 0 }; usage.executions++; usage.totalTokens += totalTokens; metrics.byApiKey[apiKeyId] = usage; }
-    const telemetry = { executionId, apiKeyId, elapsedMs, modelCalls: allCalls.length, inputTokens, outputTokens, totalTokens, specialist: route.domain, depth: route.depth, repaired: result.repaired, provider: finalModel.provider, model: finalModel.model, modelId: finalModel.id, routingPolicy: ROUTING_POLICY, routingReason: attempts.length > 1 ? `${decision.reason}_failover` : decision.reason, routingScore: finalModel.routingScore ?? null, failoverCount: Math.max(0, attempts.length - 1), attemptedModels: attempts, liveDiscovery: marketEvidence ? { enabled: marketEvidence.enabled, provider: marketEvidence.provider, evidenceCount: marketEvidence.results.length } : null };
+    const telemetry = { executionId, apiKeyId, elapsedMs, modelCalls: allCalls.length, inputTokens, outputTokens, totalTokens, specialist: route.domain, depth: route.depth, repaired: result.repaired, provider: finalModel.provider, model: finalModel.model, modelId: finalModel.id, routingPolicy: ROUTING_POLICY, routingReason: attempts.length > 1 ? `${decision.reason}_failover` : decision.reason, routingScore: finalModel.routingScore ?? null, failoverCount: Math.max(0, attempts.length - 1), attemptedModels: attempts, liveDiscovery: marketEvidence ? { enabled: marketEvidence.enabled, provider: marketEvidence.provider, evidenceCount: marketEvidence.results.length } : null, artifactRun: artifactRun ? { status: artifactRun.status, fileCount: artifactRun.files?.length || 0, testCount: artifactRun.tests?.length || 0 } : null };
     if (storageEnabled()) saveExecution({ ...telemetry, domain: route.domain, success: true }).catch(error => console.error("Failed to persist execution:", error.message)); console.log("ORACLE_METRIC", JSON.stringify(telemetry)); res.json({ original: request, answer: result.answer, route, model: { id: finalModel.id, provider: finalModel.provider, name: finalModel.model, reason: telemetry.routingReason }, qa: { pass: true, answerRepaired: result.repaired, issues: [] }, telemetry });
   } catch (error) { metrics.failures++; console.error("Oracle request failed:", error); res.status(500).json({ executionId, error: error?.message || "Oracle Stack failed to process the request." }); }
 }
