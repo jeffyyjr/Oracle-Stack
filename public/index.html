@@ -3,70 +3,48 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="Give Oracle a task. It chooses the model and specialist, executes the work, quality-checks the result, and learns from outcomes." />
+  <meta name="description" content="Talk directly to Oracle. Oracle understands the goal, routes specialist agents, checks the work, and learns from outcomes." />
   <title>Oracle Stack</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <main class="shell">
+  <main class="shell chat-shell">
     <header class="topbar">
       <a class="brand" href="/" aria-label="Oracle Stack home"><span class="brand-mark">O</span><span>Oracle Stack</span></a>
-      <span class="v1-pill">V2</span>
+      <div class="top-actions"><span class="v1-pill">LIVE ORCHESTRATOR</span><button id="new-chat" class="ghost-btn" type="button">New chat</button></div>
     </header>
 
-    <section class="hero">
-      <p class="eyebrow">ONE REQUEST → BEST EXECUTION PATH</p>
-      <h1>Say what you want.<br />Oracle handles the rest.</h1>
-      <p class="subhead">Oracle identifies the task, chooses a specialist and execution model, runs the work, quality-checks the result, and learns which routes perform best.</p>
+    <section class="hero compact-hero">
+      <p class="eyebrow">TALK TO THE ORACLE</p>
+      <h1>Tell Oracle the outcome.<br />It builds the path.</h1>
+      <p class="subhead">No agent picker. No workflow buttons. Talk normally. Oracle decides which specialists to use, routes the work, checks the result, and can coordinate revenue opportunities behind the scenes.</p>
     </section>
 
-    <section class="composer card">
-      <form id="oracle-form">
-        <label for="request">What do you want done?</label>
-        <textarea id="request" name="request" maxlength="12000" placeholder="Example: Build me a plan to get the first 100 users for my SaaS product..." required></textarea>
-        <div class="composer-footer">
-          <span id="char-count">0 / 12,000</span>
-          <button id="submit-btn" type="submit"><span class="button-label">Ask Oracle</span><span class="button-arrow">→</span></button>
+    <section class="chat card" aria-label="Oracle conversation">
+      <div id="messages" class="messages" aria-live="polite">
+        <div class="message oracle-message">
+          <div class="avatar">O</div>
+          <div class="bubble"><strong>Oracle</strong><p>What are we trying to accomplish?</p><span class="hint">Try: “Find me something legitimate I can sell without holding inventory, validate the demand, and figure out who would buy it.”</span></div>
         </div>
+      </div>
+      <section id="status" class="status hidden" aria-live="polite"></section>
+      <form id="oracle-form" class="chat-composer">
+        <textarea id="request" name="request" maxlength="12000" rows="2" placeholder="Message Oracle…" required></textarea>
+        <div class="composer-footer"><span id="char-count">0 / 12,000</span><button id="submit-btn" type="submit"><span>Send</span><span>↑</span></button></div>
       </form>
     </section>
 
-    <section id="status" class="status hidden" aria-live="polite"></section>
-
-    <section id="result" class="result hidden">
-      <div class="result-head">
-        <div><p class="eyebrow">ORACLE RESULT</p><h2>Finished result</h2></div>
-        <div class="badges"><span id="domain-badge" class="badge"></span><span id="model-badge" class="badge"></span><span id="qa-badge" class="badge"></span></div>
+    <details id="route-details" class="route-details card hidden">
+      <summary>Latest Oracle execution details</summary>
+      <div class="route-grid">
+        <div><span class="detail-label">Specialist</span><p id="route-domain"></p></div>
+        <div><span class="detail-label">Task</span><p id="route-task"></p></div>
+        <div><span class="detail-label">Goal</span><p id="route-goal"></p></div>
+        <div><span class="detail-label">Depth</span><p id="route-complexity"></p></div>
+        <div><span class="detail-label">Execution model</span><p id="route-model"></p></div>
+        <div><span class="detail-label">Quality</span><p id="route-qa"></p></div>
       </div>
-
-      <article class="card pane upgraded-pane">
-        <div class="pane-head"><span>Answer</span><button id="copy-btn" class="ghost-btn" type="button">Copy</button></div>
-        <pre id="answer-output"></pre>
-      </article>
-
-      <div id="feedback-card" class="card pane">
-        <div class="pane-head"><span>Did Oracle choose a good path?</span><span id="feedback-status"></span></div>
-        <div class="badges" aria-label="Rate this result from 1 to 5">
-          <button class="ghost-btn feedback-btn" type="button" data-score="1">1</button>
-          <button class="ghost-btn feedback-btn" type="button" data-score="2">2</button>
-          <button class="ghost-btn feedback-btn" type="button" data-score="3">3</button>
-          <button class="ghost-btn feedback-btn" type="button" data-score="4">4</button>
-          <button class="ghost-btn feedback-btn" type="button" data-score="5">5</button>
-        </div>
-      </div>
-
-      <details class="route-details card">
-        <summary>See how Oracle handled it</summary>
-        <div class="route-grid">
-          <div><span class="detail-label">Task</span><p id="route-task"></p></div>
-          <div><span class="detail-label">Goal</span><p id="route-goal"></p></div>
-          <div><span class="detail-label">Depth</span><p id="route-complexity"></p></div>
-          <div><span class="detail-label">Execution model</span><p id="route-model"></p></div>
-          <div><span class="detail-label">Routing</span><p id="route-reason"></p></div>
-          <div><span class="detail-label">Quality check</span><p id="route-qa"></p></div>
-        </div>
-      </details>
-    </section>
+    </details>
   </main>
   <script src="/app.js" defer></script>
 </body>
