@@ -28,14 +28,14 @@ export async function rerunArtifactTests({workspace,testCommands=[]}={}){
   return {status:tests.some(t=>t.code!==0)?"QA_FAILED":"MATERIALIZED",workspace,tests};
 }
 
-export async function finalizeArtifact({workspace,opportunity="work",status,files=[],tests=[],repairAttempts=0}={}){
+export async function finalizeArtifact({workspace,opportunity="work",status,files=[],tests=[],repairAttempts=0,parentWorkspaceId=null}={}){
   if(status!=="MATERIALIZED")return {status,workspace,postgresPersisted:false,files,tests,repairAttempts};
   const dir=path.join(ROOT,safeName(workspace)),archiveDir=path.join(ARCHIVE_ROOT,safeName(workspace));
   await fs.mkdir(archiveDir,{recursive:true});await fs.cp(dir,archiveDir,{recursive:true});
   const durableFiles=await snapshot(dir,files);
   const manifest={workspace,opportunity:safeName(opportunity),createdAt:new Date().toISOString(),files,tests,repairAttempts};
   await fs.writeFile(path.join(archiveDir,"oracle-manifest.json"),JSON.stringify(manifest,null,2),"utf8");
-  if(storageEnabled())await saveArtifactBundle({workspaceId:workspace,opportunity:safeName(opportunity),status,manifest,files:durableFiles,tests});
+  if(storageEnabled())await saveArtifactBundle({workspaceId:workspace,opportunity:safeName(opportunity),status,manifest,files:durableFiles,tests,parentWorkspaceId});
   return {status,workspace,archive:archiveDir,postgresPersisted:storageEnabled(),files,tests,repairAttempts};
 }
 
