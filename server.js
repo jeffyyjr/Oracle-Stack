@@ -12,7 +12,7 @@ import { techHunterInstructions } from "./agents/tech-problem-hunter.js";
 import { techFixerInstructions } from "./agents/tech-fixer.js";
 import { dealQualifierInstructions } from "./agents/deal-qualifier.js";
 import { executionAgentInstructions } from "./agents/execution-agent.js";
-import { materializeExecutionArtifacts } from "./artifact-workspace.js";
+import { materializeExecutionArtifacts, applyArtifactRepairs, rerunArtifactTests, finalizeArtifact } from "./artifact-workspace.js";
 import {
   initStorage, storageEnabled, loadRoutePerformance, saveRoutePerformance,
   saveExecution, findExecution, saveFeedback, getUsageSummary
@@ -196,6 +196,24 @@ async function judgeAnswer({ request, route, answer }) {
 function forcedArtifactPrompt({ request, route, marketEvidence }) {
   return `You are Oracle's artifact compiler. Generate a SMALL, COMPLETE, credential-free Node.js prototype for the qualified technical opportunity described below. You do not need filesystem, shell, repository, buyer credentials, or prior files. Choose safe labeled assumptions. Return ONLY valid JSON, no markdown, with schema {"opportunity":"short-name","files":[{"path":"relative/path","content":"exact complete file contents"}],"testCommands":[["node","--test"]]}. Include package.json, implementation, README, and tests. Maximum 12 files. Never claim tests ran; Oracle's server-side runner will run them after parsing this JSON.\nREQUEST:\n${request}\nROUTE:\n${JSON.stringify(route)}\nEVIDENCE:\n${evidencePromptBlock(marketEvidence)}`;
 }
+function artifactRepairPrompt({ request, spec, artifactRun, attempt }) {
+  const failures=(artifactRun.tests||[]).filter(t=>t.code!==0).map(t=>({command:t.command,code:t.code,stdout:t.stdout,stderr:t.stderr}));
+  return `You are Oracle's artifact repair compiler. A generated credential-free prototype failed real server-side tests. Repair ONLY what is necessary using the actual failure evidence. Return ONLY valid JSON: {"files":[{"path":"existing/or/new-relative-path","content":"complete replacement file contents"}],"testCommands":[["node","--test"]]}. Do not claim tests ran. Preserve the intended behavior. Maximum 12 changed files. REPAIR ATTEMPT: ${attempt}. ORIGINAL REQUEST:\n${request}\nORIGINAL SPEC:\n${JSON.stringify(spec)}\nACTUAL FAILURES:\n${JSON.stringify(failures)}`;
+}
+async function repairArtifactLoop({ request, spec, artifactRun, model }) {
+  const maxAttempts=Math.max(0,Math.min(3,Number(process.env.ARTIFACT_REPAIR_ATTEMPTS||2)));
+  let current=artifactRun, attempts=0;
+  while(current.status==="QA_FAILED"&&attempts<maxAttempts){
+    attempts++;
+    const call=await callProvider({provider:model.provider,model:model.model,effort:"low",maxOutputTokens:5000,timeoutMs:Math.max(REVENUE_PROVIDER_TIMEOUT_MS,60000),prompt:artifactRepairPrompt({request,spec,artifactRun:current,attempt:attempts})});
+    const repair=parseJson(call.text);
+    await applyArtifactRepairs({workspace:current.workspace,files:repair.files});
+    const rerun=await rerunArtifactTests({workspace:current.workspace,testCommands:Array.isArray(repair.testCommands)&&repair.testCommands.length?repair.testCommands:spec.testCommands});
+    current={...current,...rerun,repairAttempts:attempts};
+  }
+  if(current.status==="MATERIALIZED")return finalizeArtifact({workspace:current.workspace,opportunity:spec.opportunity,status:current.status,files:current.files,tests:current.tests,repairAttempts:attempts});
+  return current;
+}
 function wantsArtifactExecution(request, route) {
   return /(?:execute|build|materialize|prototype|prebuild|artifact)/i.test(request) && /(?:railcall|pass|opportunit|tech|automation|backend|ai)/i.test(request);
 }
@@ -250,6 +268,7 @@ async function oracleHandler(req, res) {
         const artifactCall = await callProvider({ provider: finalModel.provider, model: finalModel.model, effort: "low", maxOutputTokens: 5000, timeoutMs: Math.max(REVENUE_PROVIDER_TIMEOUT_MS, 60000), prompt: forcedArtifactPrompt({ request: effectiveRequest, route, marketEvidence }) });
         const spec = parseJson(artifactCall.text);
         artifactRun = await materializeExecutionArtifacts(spec);
+        if (artifactRun.status === "QA_FAILED") artifactRun = await repairArtifactLoop({ request: effectiveRequest, spec, artifactRun, model: finalModel });
         const executionSummary = artifactRun.status === "MATERIALIZED"
           ? "## Execution complete\nOracle materialized the generated prebuild and ran the workspace QA commands. The execution results below are authoritative."
           : "## Execution workspace";
