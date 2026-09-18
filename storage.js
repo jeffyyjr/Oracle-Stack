@@ -112,7 +112,7 @@ export async function getUsageSummary(days=30, apiKeyId=null) {
   return result.rows[0];
 }
 
-export async function saveArtifactBundle({ workspaceId, opportunity, status, manifest, files, tests }) {
+export async function saveArtifactBundle({ workspaceId, opportunity, status, manifest, files, tests, parentWorkspaceId=null }) {
   if (!enabled) return false;
   const client=await pool.connect();
   try {
@@ -154,9 +154,33 @@ export async function listArtifacts(limit=20) {
 
 export async function loadArtifactBundle(workspaceId) {
   if (!enabled) return null;
-  const artifact=await pool.query(`SELECT workspace_id,opportunity,status,manifest,created_at FROM oracle_artifacts WHERE workspace_id=$1`,[workspaceId]);
+  const artifact=await pool.query(`SELECT workspace_id,opportunity,status,manifest,parent_workspace_id,created_at FROM oracle_artifacts WHERE workspace_id=$1`,[workspaceId]);
   if (!artifact.rows[0]) return null;
   const files=await pool.query(`SELECT path,content,byte_size FROM oracle_artifact_files WHERE workspace_id=$1 ORDER BY path`,[workspaceId]);
   const runs=await pool.query(`SELECT command,exit_code,stdout,stderr,created_at FROM oracle_artifact_runs WHERE workspace_id=$1 ORDER BY id`,[workspaceId]);
   return {...artifact.rows[0],files:files.rows,tests:runs.rows};
+}
+
+export async function artifactLineage(workspaceId) {
+  if (!enabled) return [];
+  const result=await pool.query(`
+    WITH RECURSIVE lineage AS (
+      SELECT workspace_id,opportunity,status,manifest,parent_workspace_id,created_at,0 AS depth
+      FROM oracle_artifacts WHERE workspace_id=$1
+      UNION ALL
+      SELECT a.workspace_id,a.opportunity,a.status,a.manifest,a.parent_workspace_id,a.created_at,l.depth+1
+      FROM oracle_artifacts a JOIN lineage l ON a.workspace_id=l.parent_workspace_id
+      WHERE l.depth < 50
+    )
+    SELECT * FROM lineage ORDER BY depth DESC
+  `,[workspaceId]);
+  return result.rows;
+}
+
+export async function latestPassingArtifact(opportunityPattern=null) {
+  if (!enabled) return null;
+  const values=[]; let filter="WHERE status='MATERIALIZED'";
+  if(opportunityPattern){values.push(`%${opportunityPattern}%`);filter+=" AND opportunity ILIKE $1";}
+  const result=await pool.query(`SELECT workspace_id,opportunity,status,manifest,parent_workspace_id,created_at FROM oracle_artifacts ${filter} ORDER BY created_at DESC LIMIT 1`,values);
+  return result.rows[0]||null;
 }
