@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 
 const ROOT = process.env.ORACLE_WORKSPACE_DIR || "/tmp/oracle-workspaces";
+const ARCHIVE_ROOT = process.env.ORACLE_ARTIFACT_ARCHIVE_DIR || path.join(process.cwd(), "oracle-artifacts");
 const MAX_FILES = 30;
 const MAX_BYTES = 250000;
 const RUN_TIMEOUT_MS = 30000;
@@ -37,5 +38,15 @@ export async function materializeExecutionArtifacts({ opportunity="work", files=
   }
   const allowed=(Array.isArray(testCommands)?testCommands:[]).slice(0,6).filter(x=>Array.isArray(x)&&["node","npm","python3"].includes(x[0]));
   const tests=[]; for(const c of allowed) tests.push(await run(c[0],c.slice(1),dir));
-  return {status:tests.some(t=>t.code!==0)?"QA_FAILED":"MATERIALIZED",workspace:id,files:written,tests};
+  const status=tests.some(t=>t.code!==0)?"QA_FAILED":"MATERIALIZED";
+  let archive=null;
+  if(status==="MATERIALIZED"){
+    const archiveDir=path.join(ARCHIVE_ROOT,id);
+    await fs.mkdir(archiveDir,{recursive:true});
+    await fs.cp(dir,archiveDir,{recursive:true});
+    const manifest={workspace:id,opportunity:safeName(opportunity),createdAt:new Date().toISOString(),files:written,tests};
+    await fs.writeFile(path.join(archiveDir,"oracle-manifest.json"),JSON.stringify(manifest,null,2),"utf8");
+    archive=archiveDir;
+  }
+  return {status,workspace:id,archive,files:written,tests};
 }
