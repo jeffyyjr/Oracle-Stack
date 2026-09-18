@@ -74,9 +74,9 @@ export async function discoverMarketEvidence(request, { count = 14 } = {}) {
   const queries = querySpecs.map(x => x.q);
   const provider = process.env.BRAVE_SEARCH_API_KEY ? "brave" : "serper";
   const search = provider === "brave" ? searchBrave : searchSerper;
-  const perQuery = techIntent ? 5 : Math.max(4, Math.ceil(count / 2));
+  const perQuery = techIntent ? 8 : Math.max(4, Math.ceil(count / 2));
   const batches = await Promise.allSettled(querySpecs.map(spec => search(spec.q, perQuery, spec.channel, spec.signalType)));
-  const seen = new Set(), results = [];
+  const seen = new Set(), results = [], rejected = [];
   const looksLikeListing = (item) => {
     const u = String(item?.url || "").toLowerCase();
     const t = `${item?.title || ""} ${item?.snippet || ""}`.toLowerCase();
@@ -95,13 +95,18 @@ export async function discoverMarketEvidence(request, { count = 14 } = {}) {
   for (const batch of batches) {
     if (batch.status !== "fulfilled") continue;
     for (const item of batch.value) {
-      if (!item.url || seen.has(item.url) || !looksLikeListing(item)) continue;
-      seen.add(item.url); results.push(item);
+      if (!item.url || seen.has(item.url)) continue;
+      seen.add(item.url);
+      if (!looksLikeListing(item)) { rejected.push(item); continue; }
+      results.push(item);
       if (results.length >= count) break;
     }
     if (results.length >= count) break;
   }
-  return { enabled: true, provider, queries, results, strategy: techIntent ? "tech_individual_listing_demand_first" : "demand_first" };
+  return { enabled: true, provider, queries, results, strategy: techIntent ? "tech_individual_listing_demand_first" : "demand_first",
+    rejectedCount: rejected.length,
+    demandEvidenceCount: results.filter(x => x.signalType === "demand").length,
+    supplyEvidenceCount: results.filter(x => x.signalType !== "demand").length };
 }
 
 export function evidencePromptBlock(evidence) {
