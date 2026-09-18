@@ -1,3 +1,4 @@
+import { verifyListings } from "./listing-verifier.js";
 const DEFAULT_TIMEOUT_MS = 12000;
 
 function cleanText(value = "") {
@@ -100,7 +101,11 @@ export async function discoverMarketEvidence(request, { count = 14 } = {}) {
       results.push(item);
     }
   }
-  return { enabled: true, provider, queries, results: results.slice(0, count), strategy: techIntent ? "tech_individual_listing_demand_first" : "demand_first",
+  const selected = results.slice(0, count);
+  const verified = techIntent ? await verifyListings(selected, 6) : [];
+  const verificationByUrl = new Map(verified.map(x => [x.url, x.verification]));
+  const enriched = selected.map(x => ({ ...x, verification: verificationByUrl.get(x.url) || null }));
+  return { enabled: true, provider, queries, results: enriched, strategy: techIntent ? "tech_individual_listing_demand_first" : "demand_first",
     rejectedCount: rejected.length,
     demandEvidenceCount: results.filter(x => x.signalType === "demand").length,
     supplyEvidenceCount: results.filter(x => x.signalType !== "demand").length };
@@ -109,6 +114,6 @@ export async function discoverMarketEvidence(request, { count = 14 } = {}) {
 export function evidencePromptBlock(evidence) {
   if (!evidence?.enabled) return "\nLIVE DISCOVERY: unavailable. Treat market claims as hypotheses requiring validation.";
   if (!evidence.results.length) return `\nLIVE DISCOVERY: ${evidence.provider} was queried but returned no usable evidence. Do not claim validation.`;
-  const rows = evidence.results.map((x,i)=>`[${i+1}] [${x.channel || "web"} / ${x.signalType || "demand"}] ${x.title}\nURL: ${x.url}\nSnippet: ${x.snippet}`).join("\n\n");
-  return `\nLIVE MARKET DISCOVERY (${evidence.provider}; DEMAND-FIRST). First identify concrete current buyer intent or a specific pain signal. For tech revenue work, individual listings/issues/posts are required for demand qualification; category pages, search pages, generic articles, tutorials, and trend pages are context only and must not qualify as a buyer opportunity. Do NOT choose a product/service merely because a generic article says the business model is viable. Only after a demand signal is identified should you propose a fulfillment path, and label supply/pricing as unverified until separately checked. These are extracted web chunks for grounding, but still verify claims from the linked source. Treat items marked supply_competition () as evidence of available services, competition, packaging, or price anchors only — never as proof that a buyer currently wants to pay. Cite URLs next to claims and explicitly separate observed evidence from inference. Never invent a buyer, supplier, price, contact, sale, or revenue figure. If direct demand is weak, say so and give the next validation action instead of claiming validation.\n\n${rows}`;
+  const rows = evidence.results.map((x,i)=>`[${i+1}] [${x.channel || "web"} / ${x.signalType || "demand"}] ${x.title}\nURL: ${x.url}\nVerification: ${x.verification?.status || "NOT_CHECKED"} at ${x.verification?.verifiedAt || "n/a"} (HTTP ${x.verification?.httpStatus ?? "n/a"})\nSnippet: ${x.snippet}\nLive page evidence: ${x.verification?.evidence || "unavailable"}`).join("\n\n");
+  return `\nLIVE MARKET DISCOVERY (${evidence.provider}; DEMAND-FIRST). First identify concrete current buyer intent or a specific pain signal. For tech revenue work, individual listings/issues/posts are required for demand qualification; category pages, search pages, generic articles, tutorials, and trend pages are context only and must not qualify as a buyer opportunity. Do NOT choose a product/service merely because a generic article says the business model is viable. Only after a demand signal is identified should you propose a fulfillment path, and label supply/pricing as unverified until separately checked. These are extracted web chunks plus best-effort direct public-page verification. VERIFIED_OPEN may be treated as evidence the public page currently appears actionable; CLOSED must be rejected; INACCESSIBLE or UNKNOWN must remain VERIFY. Never bypass login walls, CAPTCHAs, access controls, or platform protections. Treat items marked supply_competition () as evidence of available services, competition, packaging, or price anchors only — never as proof that a buyer currently wants to pay. Cite URLs next to claims and explicitly separate observed evidence from inference. Never invent a buyer, supplier, price, contact, sale, or revenue figure. If direct demand is weak, say so and give the next validation action instead of claiming validation.\n\n${rows}`;
 }
