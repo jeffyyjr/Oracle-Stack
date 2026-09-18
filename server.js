@@ -250,7 +250,15 @@ async function oracleHandler(req, res) {
         const artifactCall = await callProvider({ provider: finalModel.provider, model: finalModel.model, effort: "low", maxOutputTokens: 5000, timeoutMs: Math.max(REVENUE_PROVIDER_TIMEOUT_MS, 60000), prompt: forcedArtifactPrompt({ request: effectiveRequest, route, marketEvidence }) });
         const spec = parseJson(artifactCall.text);
         artifactRun = await materializeExecutionArtifacts(spec);
-        result.answer = result.answer.trim() + "\n\n## Execution workspace\n" + JSON.stringify(artifactRun, null, 2);
+        const executionSummary = artifactRun.status === "MATERIALIZED"
+          ? "## Execution complete\nOracle materialized the generated prebuild and ran the workspace QA commands. The execution results below are authoritative."
+          : "## Execution workspace";
+        // A planning model may have said it was blocked before the server-side runner executed.
+        // Replace that stale narrative when execution actually succeeded.
+        if (artifactRun.status === "MATERIALIZED") {
+          result.answer = "The server-side execution runner completed the requested prebuild successfully.";
+        }
+        result.answer = result.answer.trim() + "\n\n" + executionSummary + "\n" + JSON.stringify(artifactRun, null, 2);
       } catch (error) {
         artifactRun = { status: "QA_FAILED", error: error.message };
         result.answer = result.answer.trim() + "\n\n## Execution workspace\n" + JSON.stringify(artifactRun, null, 2);
