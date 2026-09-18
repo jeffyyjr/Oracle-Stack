@@ -247,7 +247,7 @@ async function oracleHandler(req, res) {
     let artifactRun = null;
     if (wantsArtifactExecution(effectiveRequest, route)) {
       try {
-        const artifactCall = await callProvider({ provider: finalModel.provider, model: finalModel.model, effort: "low", maxOutputTokens: 5000, timeoutMs: REVENUE_PROVIDER_TIMEOUT_MS, prompt: forcedArtifactPrompt({ request: effectiveRequest, route, marketEvidence }) });
+        const artifactCall = await callProvider({ provider: finalModel.provider, model: finalModel.model, effort: "low", maxOutputTokens: 5000, timeoutMs: Math.max(REVENUE_PROVIDER_TIMEOUT_MS, 60000), prompt: forcedArtifactPrompt({ request: effectiveRequest, route, marketEvidence }) });
         const spec = parseJson(artifactCall.text);
         artifactRun = await materializeExecutionArtifacts(spec);
         result.answer = result.answer.trim() + "\n\n## Execution workspace\n" + JSON.stringify(artifactRun, null, 2);
