@@ -312,7 +312,13 @@ async function oracleHandler(req, res) {
         const artifactCall = await callProvider({ provider: finalModel.provider, model: finalModel.model, effort: "low", maxOutputTokens: 7000, timeoutMs: Math.max(REVENUE_PROVIDER_TIMEOUT_MS, 110000), prompt: compilePrompt });
         const spec = parseJson(artifactCall.text);
         artifactRun = await materializeExecutionArtifacts(spec);
-        if (priorArtifact) {\n          artifactRun.parentWorkspace = priorArtifact.workspace_id;\n          if (artifactRun.status === "MATERIALIZED") {\n            artifactRun = await finalizeArtifact({workspace:artifactRun.workspace,opportunity:spec.opportunity,status:artifactRun.status,files:artifactRun.files,tests:artifactRun.tests,repairAttempts:artifactRun.repairAttempts||0,parentWorkspaceId:priorArtifact.workspace_id});\n            artifactRun.parentWorkspace = priorArtifact.workspace_id;\n          }\n        }
+        if (priorArtifact) {
+          artifactRun.parentWorkspace = priorArtifact.workspace_id;
+          if (artifactRun.status === "MATERIALIZED") {
+            artifactRun = await finalizeArtifact({workspace:artifactRun.workspace,opportunity:spec.opportunity,status:artifactRun.status,files:artifactRun.files,tests:artifactRun.tests,repairAttempts:artifactRun.repairAttempts||0,parentWorkspaceId:priorArtifact.workspace_id});
+            artifactRun.parentWorkspace = priorArtifact.workspace_id;
+          }
+        }
         if (artifactRun.status === "QA_FAILED") artifactRun = await repairArtifactLoop({ request: effectiveRequest, spec, artifactRun, model: finalModel });
         const executionSummary = artifactRun.status === "MATERIALIZED"
           ? "## Execution complete\nOracle materialized the generated prebuild and ran the workspace QA commands. The execution results below are authoritative."
