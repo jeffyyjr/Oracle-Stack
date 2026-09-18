@@ -231,8 +231,18 @@ function artifactImprovementPrompt({request,artifact}) {
   const prior={workspace_id:artifact.workspace_id,opportunity:artifact.opportunity,manifest:artifact.manifest,files:artifact.files.map(f=>({path:f.path,content:f.content})),tests:artifact.tests};
   return `You are Oracle's artifact improvement compiler. Improve an EXISTING persisted credential-free prototype instead of rebuilding blindly. Preserve working behavior unless the request requires a change. Return ONLY valid JSON with schema {"opportunity":"short-name","files":[{"path":"relative/path","content":"complete file contents"}],"testCommands":[["node","--test"]]}. Return a COMPLETE new version containing every file needed for the improved build, not a patch. Include tests for changed behavior. Maximum 12 files. Never claim tests ran; Oracle will materialize and execute them. USER REQUEST:\n${request}\nPERSISTED PRIOR BUILD:\n${JSON.stringify(prior)}`;
 }
+function executionIntent(request) {
+  const text = String(request || "");
+  // Explicit negative instructions always win. ASK requests must never create artifacts.
+  if (/(?:do not|don't|dont|no)\s+(?:build|execute|materialize|create|generate)(?:\s+(?:anything|files?|artifacts?|a prototype|a prebuild))?/i.test(text)
+      || /(?:analysis|analyze|research|evaluate|explain|recommend|identify)\s+(?:only|without building)/i.test(text)) return "ask";
+  if (/(?:improve|upgrade|revise|modify|extend|update|iterate)\b/i.test(text)
+      && /(?:artifact|build|prototype|prebuild|workspace|previous|existing|last)\b/i.test(text)) return "improve";
+  if (/(?:execute|build|materialize|prototype|prebuild|create (?:the |a )?(?:app|service|automation|artifact)|generate (?:the )?files?)\b/i.test(text)) return "build";
+  return "ask";
+}
 function wantsArtifactExecution(request, route) {
-  return /(?:execute|build|materialize|prototype|prebuild|artifact)/i.test(request) && /(?:railcall|pass|opportunit|tech|automation|backend|ai)/i.test(request);
+  return executionIntent(request) !== "ask";
 }
 async function runCandidate({ request, route, model, marketEvidence = null }) {
   const started = Date.now(); const calls = []; let repaired = false;
@@ -333,7 +343,7 @@ async function oracleHandler(req, res) {
         artifactRun = { status: "QA_FAILED", error: error.message };
         result.answer = result.answer.trim() + "\n\n## Execution workspace\n" + JSON.stringify(artifactRun, null, 2);
       }
-    } else if (route.domain === "revenue") {
+    } else if (route.domain === "revenue" && executionIntent(effectiveRequest) !== "ask") {
       const match = result.answer.match(/\`\`\`(?:json)?\\s*ORACLE_ARTIFACTS\\s*([\\s\\S]*?)\`\`\`/i)
         || result.answer.match(/ORACLE_ARTIFACTS\\s*([\\{][\\s\\S]*?[\\}])\\s*$/i);
       if (match) {
