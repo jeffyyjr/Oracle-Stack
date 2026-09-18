@@ -293,11 +293,18 @@ async function oracleHandler(req, res) {
     if (wantsArtifactExecution(effectiveRequest, route)) {
       try {
         let priorArtifact = null;
-        if (wantsArtifactImprovement(effectiveRequest)) priorArtifact = await latestArtifactForRequest(effectiveRequest);
+        if (wantsArtifactImprovement(effectiveRequest)) {
+          priorArtifact = await latestArtifactForRequest(effectiveRequest);
+          if (priorArtifact) {
+            // The normal planning answer may incorrectly claim it lacks the prior repo.
+            // Persisted artifact memory is authoritative for execution.
+            result.answer = `Loaded persisted artifact ${priorArtifact.workspace_id} from Oracle memory; improving that build now.`;
+          }
+        }
         const compilePrompt = priorArtifact
           ? artifactImprovementPrompt({ request: effectiveRequest, artifact: priorArtifact })
           : forcedArtifactPrompt({ request: effectiveRequest, route, marketEvidence });
-        const artifactCall = await callProvider({ provider: finalModel.provider, model: finalModel.model, effort: "low", maxOutputTokens: 5000, timeoutMs: Math.max(REVENUE_PROVIDER_TIMEOUT_MS, 60000), prompt: compilePrompt });
+        const artifactCall = await callProvider({ provider: finalModel.provider, model: finalModel.model, effort: "low", maxOutputTokens: 7000, timeoutMs: Math.max(REVENUE_PROVIDER_TIMEOUT_MS, 110000), prompt: compilePrompt });
         const spec = parseJson(artifactCall.text);
         artifactRun = await materializeExecutionArtifacts(spec);
         if (priorArtifact) artifactRun.parentWorkspace = priorArtifact.workspace_id;
