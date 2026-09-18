@@ -141,3 +141,22 @@ export async function saveArtifactBundle({ workspaceId, opportunity, status, man
     throw error;
   } finally { client.release(); }
 }
+
+export async function listArtifacts(limit=20) {
+  if (!enabled) return [];
+  const n=Math.max(1,Math.min(100,Number(limit)||20));
+  const result=await pool.query(`
+    SELECT workspace_id,opportunity,status,manifest,created_at
+    FROM oracle_artifacts ORDER BY created_at DESC LIMIT $1
+  `,[n]);
+  return result.rows;
+}
+
+export async function loadArtifactBundle(workspaceId) {
+  if (!enabled) return null;
+  const artifact=await pool.query(`SELECT workspace_id,opportunity,status,manifest,created_at FROM oracle_artifacts WHERE workspace_id=$1`,[workspaceId]);
+  if (!artifact.rows[0]) return null;
+  const files=await pool.query(`SELECT path,content,byte_size FROM oracle_artifact_files WHERE workspace_id=$1 ORDER BY path`,[workspaceId]);
+  const runs=await pool.query(`SELECT command,exit_code,stdout,stderr,created_at FROM oracle_artifact_runs WHERE workspace_id=$1 ORDER BY id`,[workspaceId]);
+  return {...artifact.rows[0],files:files.rows,tests:runs.rows};
+}
