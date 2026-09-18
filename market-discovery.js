@@ -55,16 +55,17 @@ export function discoveryEnabled() {
 export async function discoverMarketEvidence(request, { count = 14 } = {}) {
   if (!discoveryEnabled()) return { enabled: false, provider: null, queries: [], results: [] };
   const goal = String(request).slice(0, 360);
+  // Search engines perform better with a compact problem taxonomy than with the full mission prompt.
+  const techTerms = "API integration automation SaaS AWS deployment backend database AI workflow bug fix";
   // Demand first: discover concrete current need across channels before researching fulfillment.
   const techIntent = /tech|software|saas|app|website|api|integration|automation|deploy|bug|code|data|ai|computer/i.test(goal);
   const querySpecs = techIntent ? [
-    { channel: "github", signalType: "demand", q: `site:github.com/issues ${goal} ("need help" OR "help wanted" OR "bug" OR "feature request" OR "looking for")` },
-    { channel: "reddit", signalType: "demand", q: `site:reddit.com ${goal} ("need help" OR "looking for someone" OR "how do I fix" OR "will pay" OR "hire")` },
-    { channel: "upwork", signalType: "demand", q: `site:upwork.com/freelance-jobs/apply/ ${goal} ("Fixed Price" OR hourly OR budget) -academic -assignment -homework` },
-    { channel: "freelancer", signalType: "demand", q: `site:freelancer.com/projects/ ${goal} (budget OR "$" OR "fixed") -academic -assignment -homework` },
-    { channel: "peopleperhour", signalType: "demand", q: `site:peopleperhour.com/freelance-jobs/ ${goal} (budget OR fixed OR hourly) -academic -assignment -homework` },
-    { channel: "public_rfp", signalType: "demand", q: `${goal} ("request for proposal" OR RFP OR tender OR procurement OR "request for quote") software technology` },
-    // Fiverr is primarily supply/competition evidence. Use it to package and price an offer, never as proof of a buyer.
+    { channel: "upwork", signalType: "demand", q: `site:upwork.com/freelance-jobs/apply/ ("API" OR automation OR AWS OR SaaS OR backend) ("Fixed Price" OR hourly OR budget) -academic -homework` },
+    { channel: "freelancer", signalType: "demand", q: `site:freelancer.com/projects/ ("API" OR automation OR AWS OR backend OR integration) (budget OR fixed OR hourly) -academic -homework` },
+    { channel: "peopleperhour", signalType: "demand", q: `site:peopleperhour.com/freelance-jobs/ ("API" OR automation OR SaaS OR integration OR bug) (budget OR fixed OR hourly) -academic -homework` },
+    { channel: "reddit", signalType: "demand", q: `site:reddit.com/r/forhire OR site:reddit.com/r/freelance ("[Hiring]" OR "will pay" OR budget) (${techTerms})` },
+    { channel: "github", signalType: "demand", q: `site:github.com/issues (bounty OR "$" OR "paid" OR sponsor) (${techTerms})` },
+    { channel: "public_rfp", signalType: "demand", q: `("request for proposal" OR RFP OR solicitation OR "request for quote") (${techTerms}) (deadline OR due)` },
   ] : [
     { channel: "web_demand", signalType: "demand", q: `${goal} ("looking for" OR "need help" OR "need a" OR "recommend" OR "request quote" OR "seeking") buyer customer` },
     { channel: "web_pain", signalType: "demand", q: `${goal} (problem OR complaint OR frustrated OR "can't find" OR "need someone") customer business` },
@@ -97,11 +98,9 @@ export async function discoverMarketEvidence(request, { count = 14 } = {}) {
       seen.add(item.url);
       if (!looksLikeListing(item)) { rejected.push(item); continue; }
       results.push(item);
-      if (results.length >= count) break;
     }
-    if (results.length >= count) break;
   }
-  return { enabled: true, provider, queries, results, strategy: techIntent ? "tech_individual_listing_demand_first" : "demand_first",
+  return { enabled: true, provider, queries, results: results.slice(0, count), strategy: techIntent ? "tech_individual_listing_demand_first" : "demand_first",
     rejectedCount: rejected.length,
     demandEvidenceCount: results.filter(x => x.signalType === "demand").length,
     supplyEvidenceCount: results.filter(x => x.signalType !== "demand").length };
