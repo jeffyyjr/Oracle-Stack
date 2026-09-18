@@ -4,6 +4,9 @@ import path from "path";
 import { fileURLToPath } from "url";
 import crypto from "crypto";
 import { requireApiKey, apiAuthEnabled, quotaSnapshot } from "./api-auth.js";
+import { opportunityFinder } from "./agents/opportunity-finder.js";
+import { buyerMatcher } from "./agents/buyer-matcher.js";
+import { dealOrchestrator } from "./agents/deal-orchestrator.js";
 import {
   initStorage, storageEnabled, loadRoutePerformance, saveRoutePerformance,
   saveExecution, findExecution, saveFeedback, getUsageSummary
@@ -13,7 +16,7 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PORT = process.env.PORT || 3000;
-const SPECIALISTS = new Set(["business", "research", "writing", "coding", "career", "general"]);
+const SPECIALISTS = new Set(["business", "research", "writing", "coding", "career", "revenue", "general"]);
 const DEPTHS = new Set(["light", "normal", "deep"]);
 const ROUTER_MODEL = process.env.ORACLE_MODEL || "gpt-5.6-sol";
 const JUDGE_MODEL = process.env.JUDGE_MODEL || "gpt-5.6-sol";
@@ -147,14 +150,30 @@ function selectExecutionModel(route, requestedModel = "") {
   const candidates = models.map(model => { const domainFit = model.strengths.includes(route.domain) ? 1 : 0.72; const learned = learnedScore(model.id, route.domain, route.depth); const routingScore = Number((domainFit * (model.quality * weights.quality + model.speed * weights.speed + model.cost * weights.cost + learned * weights.learned)).toFixed(4)); return { ...model, learned, domainFit, routingScore }; }).sort((a, b) => b.routingScore - a.routingScore);
   return { selected: candidates[0], reason: `adaptive_${ROUTING_POLICY}`, candidates, allowFailover: true };
 }
-function specialistProfile(domain) { return ({ business: "sharp SaaS/business operator", research: "rigorous research lead", writing: "expert writing director", coding: "senior software architect", career: "career strategy specialist", general: "high-level execution specialist" })[domain] || "high-level execution specialist"; }
+function specialistProfile(domain) { return ({ business: "sharp SaaS/business operator", research: "rigorous research lead", writing: "expert writing director", coding: "senior software architect", career: "career strategy specialist", revenue: "evidence-driven revenue opportunity orchestrator", general: "high-level execution specialist" })[domain] || "high-level execution specialist"; }
+function revenueInstructions(request, route) {
+  if (route.domain !== "revenue") return "";
+  return `
+REVENUE PIPELINE ACTIVE.
+You are Oracle coordinating these internal agents in sequence:
+1. ${opportunityFinder.id}: discover legitimate product/service/digital/lead opportunities and distinguish evidence from hypotheses.
+2. validate-demand: test whether a real buyer problem and plausible demand exist.
+3. validate-supply: identify a legitimate supply/fulfillment path without inventing suppliers.
+4. unit-economics: estimate acquisition cost, sale value, fees and margin; label unknowns.
+5. ${buyerMatcher.id}: define likely buyer segments, qualification signals, where genuine intent can be found, and the offer angle.
+6. ${dealOrchestrator.id}: choose the next executable steps and define how outcomes will be tracked.
+
+Required stages: ${dealOrchestrator.stages.join(", ")}.
+Do not claim live web research, named buyers, suppliers, outreach, transactions, or sales unless those actions/data were actually available to this execution. No spam, deception, impersonation, fake scarcity, or platform-rule evasion. Payments, contracts, purchases, listings, messages, and consequential account actions require explicit authorization before execution. Optimize for validated profitable transactions, not busywork.
+Return a useful operator-facing result: strongest opportunity candidates, evidence/unknowns, buyer match, economics, risks, and the next concrete validation/execution step.`;
+}
 async function routeWithOracle(request) {
-  const result = await callProvider({ provider: "openai", model: ROUTER_MODEL, maxOutputTokens: 450, prompt: `You are Oracle Router. Classify the request and choose the MINIMUM depth needed. Return ONLY JSON: {"domain":"business|research|writing|coding|career|general","task":"short task","goal":"desired result","complexity":"simple|standard|advanced","depth":"light|normal|deep"}. Light = straightforward. Normal = meaningful multi-step. Deep = genuinely difficult/high-stakes. USER REQUEST:\n${request}` });
+  const result = await callProvider({ provider: "openai", model: ROUTER_MODEL, maxOutputTokens: 450, prompt: `You are Oracle Router. Classify the request and choose the MINIMUM depth needed. Return ONLY JSON: {"domain":"business|research|writing|coding|career|revenue|general","task":"short task","goal":"desired result","complexity":"simple|standard|advanced","depth":"light|normal|deep"}. Use revenue when the user wants to make money by finding something to sell, sourcing/fulfilling an offer, finding or matching buyers, brokering supply and demand, generating deal flow, or coordinating a sale/revenue workflow. Light = straightforward. Normal = meaningful multi-step. Deep = genuinely difficult/high-stakes. USER REQUEST:\n${request}` });
   const route = parseJson(result.text); route.domain = SPECIALISTS.has(String(route.domain).toLowerCase()) ? String(route.domain).toLowerCase() : "general"; route.depth = DEPTHS.has(String(route.depth).toLowerCase()) ? String(route.depth).toLowerCase() : "normal"; return { route, call: result };
 }
 async function execute({ request, route, executionModel, repair = "" }) {
   const limits = route.depth === "light" ? { tokens: 1200, length: "Prefer a concise answer, usually under 500 words unless the task inherently requires more." } : route.depth === "deep" ? { tokens: 3600, length: "Use necessary depth, but aggressively remove repetition and filler." } : { tokens: 2400, length: "Aim for a practical answer around 700-1200 words when appropriate; use less when possible." };
-  return callProvider({ provider: executionModel.provider, model: executionModel.model, effort: route.depth === "deep" ? "medium" : "low", maxOutputTokens: limits.tokens, prompt: `You are a ${specialistProfile(route.domain)} inside Oracle Stack. Privately improve the raw request into strong execution instructions, then execute them yourself. Never expose the internal Stack. Return only the finished work.\nREQUEST:\n${request}\nROUTE:\n${JSON.stringify(route)}${repair ? `\nQA REPAIR NOTES:\n${repair}` : ""}\n${limits.length}\nPreserve intent. Do not invent facts or external actions. Make labeled assumptions for nonessential unknowns. Ask only if a truly essential detail prevents responsible execution. Prioritize concrete useful information over exhaustive text. Do not repeat the same recommendation in multiple sections.` });
+  return callProvider({ provider: executionModel.provider, model: executionModel.model, effort: route.depth === "deep" ? "medium" : "low", maxOutputTokens: limits.tokens, prompt: `You are a ${specialistProfile(route.domain)} inside Oracle Stack. Privately improve the raw request into strong execution instructions, then execute them yourself. Never expose the internal Stack. Return only the finished work.\nREQUEST:\n${request}\nROUTE:\n${JSON.stringify(route)}${repair ? `\nQA REPAIR NOTES:\n${repair}` : ""}\n${limits.length}\nPreserve intent. Do not invent facts or external actions. Make labeled assumptions for nonessential unknowns.${revenueInstructions(request, route)} Ask only if a truly essential detail prevents responsible execution. Prioritize concrete useful information over exhaustive text. Do not repeat the same recommendation in multiple sections.` });
 }
 async function judgeAnswer({ request, route, answer }) {
   const result = await callProvider({ provider: "openai", model: JUDGE_MODEL, maxOutputTokens: 400, prompt: `You are Oracle final QA. Return ONLY JSON {"pass":true,"issues":[],"repair_instructions":""}. Fail only for MATERIAL problems: not answering the request, changed intent, ignored explicit constraints, fabricated facts/actions, contradictions, or clearly unusable verbosity. Do not fail for minor style. ORIGINAL:\n${request}\nROUTE:\n${JSON.stringify(route)}\nANSWER:\n${answer}` });
