@@ -15,7 +15,7 @@ import { executionAgentInstructions } from "./agents/execution-agent.js";
 import { materializeExecutionArtifacts, applyArtifactRepairs, rerunArtifactTests, finalizeArtifact } from "./artifact-workspace.js";
 import {
   initStorage, storageEnabled, loadRoutePerformance, saveRoutePerformance,
-  saveExecution, findExecution, saveFeedback, getUsageSummary, listArtifacts, loadArtifactBundle
+  saveExecution, findExecution, saveFeedback, getUsageSummary, listArtifacts, loadArtifactBundle, artifactLineage, latestPassingArtifact
 } from "./storage.js";
 
 const app = express();
@@ -252,6 +252,11 @@ app.get("/api/artifacts/:workspaceId", async (req,res) => {
   try { const artifact=await loadArtifactBundle(req.params.workspaceId); if(!artifact)return res.status(404).json({error:"Artifact not found."}); res.json(artifact); }
   catch(error){ res.status(500).json({error:error.message}); }
 });
+app.get("/api/artifacts/:workspaceId/lineage", async (req,res) => {
+  if(!storageEnabled()) return res.status(503).json({error:"Postgres persistence is not enabled."});
+  try { const lineage=await artifactLineage(req.params.workspaceId); if(!lineage.length)return res.status(404).json({error:"Artifact not found."}); res.json({workspaceId:req.params.workspaceId,lineage}); }
+  catch(error){ res.status(500).json({error:error.message}); }
+});
 app.get("/api/models", (_req, res) => { const models = modelRegistry().map(({ id, provider, model, strengths, quality, speed, cost }) => ({ id, provider, model, strengths, quality, speed, cost })); res.json({ policy: ROUTING_POLICY, models }); });
 app.get("/api/metrics", async (_req, res) => { let persistentUsage = null; try { persistentUsage = await getUsageSummary(30); } catch (error) { console.error("Usage summary failed:", error.message); } res.json({ ...metrics, avgMs: metrics.successes ? Math.round(metrics.totalMs / metrics.successes) : 0, avgCalls: metrics.requests ? Number((metrics.calls / metrics.requests).toFixed(2)) : 0, persistence: storageEnabled() ? "postgres" : "memory", persistentUsage30d: persistentUsage, learnedRoutes: [...modelPerformance.entries()].map(([key, value]) => ({ key, ...value })) }); });
 app.get("/v1/usage", requireApiKey, async (req, res) => { const apiKeyId = req.oracleApiKeyId; const inMemory = metrics.byApiKey[apiKeyId] || { executions: 0, totalTokens: 0 }; let persistent = null; try { persistent = await getUsageSummary(30, apiKeyId); } catch (error) { console.error("API usage lookup failed:", error.message); } res.json({ apiKeyId, windowDays: 30, quota: quotaSnapshot(apiKeyId), currentProcess: inMemory, persistent }); });
@@ -307,7 +312,7 @@ async function oracleHandler(req, res) {
         const artifactCall = await callProvider({ provider: finalModel.provider, model: finalModel.model, effort: "low", maxOutputTokens: 7000, timeoutMs: Math.max(REVENUE_PROVIDER_TIMEOUT_MS, 110000), prompt: compilePrompt });
         const spec = parseJson(artifactCall.text);
         artifactRun = await materializeExecutionArtifacts(spec);
-        if (priorArtifact) artifactRun.parentWorkspace = priorArtifact.workspace_id;
+        if (priorArtifact) {\n          artifactRun.parentWorkspace = priorArtifact.workspace_id;\n          if (artifactRun.status === "MATERIALIZED") {\n            artifactRun = await finalizeArtifact({workspace:artifactRun.workspace,opportunity:spec.opportunity,status:artifactRun.status,files:artifactRun.files,tests:artifactRun.tests,repairAttempts:artifactRun.repairAttempts||0,parentWorkspaceId:priorArtifact.workspace_id});\n            artifactRun.parentWorkspace = priorArtifact.workspace_id;\n          }\n        }
         if (artifactRun.status === "QA_FAILED") artifactRun = await repairArtifactLoop({ request: effectiveRequest, spec, artifactRun, model: finalModel });
         const executionSummary = artifactRun.status === "MATERIALIZED"
           ? "## Execution complete\nOracle materialized the generated prebuild and ran the workspace QA commands. The execution results below are authoritative."
