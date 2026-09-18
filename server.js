@@ -8,6 +8,8 @@ import { opportunityFinder } from "./agents/opportunity-finder.js";
 import { buyerMatcher } from "./agents/buyer-matcher.js";
 import { dealOrchestrator } from "./agents/deal-orchestrator.js";
 import { discoverMarketEvidence, evidencePromptBlock, discoveryEnabled } from "./market-discovery.js";
+import { techHunterInstructions } from "./agents/tech-problem-hunter.js";
+import { techFixerInstructions } from "./agents/tech-fixer.js";
 import {
   initStorage, storageEnabled, loadRoutePerformance, saveRoutePerformance,
   saveExecution, findExecution, saveFeedback, getUsageSummary
@@ -153,6 +155,13 @@ function selectExecutionModel(route, requestedModel = "") {
   return { selected: candidates[0], reason: `adaptive_${ROUTING_POLICY}`, candidates, allowFailover: true };
 }
 function specialistProfile(domain) { return ({ business: "sharp SaaS/business operator", research: "rigorous research lead", writing: "expert writing director", coding: "senior software architect", career: "career strategy specialist", revenue: "evidence-driven revenue opportunity orchestrator", general: "high-level execution specialist" })[domain] || "high-level execution specialist"; }
+function techRevenueInstructions(request, route) {
+  if (route.domain !== "revenue") return "";
+  const techIntent = /tech|software|saas|app|website|api|integration|automation|deploy|bug|code|data|ai|computer/i.test(request);
+  if (!techIntent) return "";
+  return `\n${techHunterInstructions()}\nHANDOFF WHEN QUALIFIED:\n${techFixerInstructions()}\nREVENUE HANDOFF: After feasibility, identify pricing inputs and the next authorized action. Do not claim outreach, delivery, or revenue unless it actually occurred.`;
+}
+
 function revenueInstructions(request, route) {
   if (route.domain !== "revenue") return "";
   return `
@@ -175,7 +184,7 @@ async function routeWithOracle(request) {
 }
 async function execute({ request, route, executionModel, repair = "", marketEvidence = null }) {
   const limits = route.depth === "light" ? { tokens: 1200, length: "Prefer a concise answer, usually under 500 words unless the task inherently requires more." } : route.depth === "deep" ? { tokens: 3600, length: "Use necessary depth, but aggressively remove repetition and filler." } : { tokens: 2400, length: "Aim for a practical answer around 700-1200 words when appropriate; use less when possible." };
-  return callProvider({ provider: executionModel.provider, model: executionModel.model, effort: "low", maxOutputTokens: Math.min(limits.tokens, route.domain === "revenue" ? 1200 : limits.tokens), timeoutMs: route.domain === "revenue" ? REVENUE_PROVIDER_TIMEOUT_MS : PROVIDER_TIMEOUT_MS, prompt: `You are a ${specialistProfile(route.domain)} inside Oracle Stack. Privately improve the raw request into strong execution instructions, then execute them yourself. Never expose the internal Stack. Return only the finished work.\nREQUEST:\n${request}\nROUTE:\n${JSON.stringify(route)}${repair ? `\nQA REPAIR NOTES:\n${repair}` : ""}\n${limits.length}\nPreserve intent. Do not invent facts or external actions. Make labeled assumptions for nonessential unknowns.${revenueInstructions(request, route)}${route.domain === "revenue" ? evidencePromptBlock(marketEvidence) : ""} Ask only if a truly essential detail prevents responsible execution. Prioritize concrete useful information over exhaustive text. Do not repeat the same recommendation in multiple sections.` });
+  return callProvider({ provider: executionModel.provider, model: executionModel.model, effort: "low", maxOutputTokens: Math.min(limits.tokens, route.domain === "revenue" ? 1200 : limits.tokens), timeoutMs: route.domain === "revenue" ? REVENUE_PROVIDER_TIMEOUT_MS : PROVIDER_TIMEOUT_MS, prompt: `You are a ${specialistProfile(route.domain)} inside Oracle Stack. Privately improve the raw request into strong execution instructions, then execute them yourself. Never expose the internal Stack. Return only the finished work.\nREQUEST:\n${request}\nROUTE:\n${JSON.stringify(route)}${repair ? `\nQA REPAIR NOTES:\n${repair}` : ""}\n${limits.length}\nPreserve intent. Do not invent facts or external actions. Make labeled assumptions for nonessential unknowns.${revenueInstructions(request, route)}${techRevenueInstructions(request, route)}${route.domain === "revenue" ? evidencePromptBlock(marketEvidence) : ""} Ask only if a truly essential detail prevents responsible execution. Prioritize concrete useful information over exhaustive text. Do not repeat the same recommendation in multiple sections.` });
 }
 async function judgeAnswer({ request, route, answer }) {
   const result = await callProvider({ provider: "openai", model: JUDGE_MODEL, maxOutputTokens: 400, prompt: `You are Oracle final QA. Return ONLY JSON {"pass":true,"issues":[],"repair_instructions":""}. Fail only for MATERIAL problems: not answering the request, changed intent, ignored explicit constraints, fabricated facts/actions, contradictions, or clearly unusable verbosity. Do not fail for minor style. ORIGINAL:\n${request}\nROUTE:\n${JSON.stringify(route)}\nANSWER:\n${answer}` });
