@@ -207,8 +207,14 @@ app.get("/v1/usage", requireApiKey, async (req, res) => { const apiKeyId = req.o
 app.post("/api/feedback", async (req, res) => { const executionId = String(req.body?.executionId || "").trim(); const score = Number(req.body?.score); if (!executionId) return res.status(400).json({ error: "executionId is required." }); if (!Number.isFinite(score) || score < 1 || score > 5) return res.status(400).json({ error: "score must be between 1 and 5." }); let execution = executionIndex.get(executionId); if (!execution && storageEnabled()) { const row = await findExecution(executionId); if (row) execution = { modelId: row.model_id, domain: row.domain, depth: row.depth }; } if (!execution) return res.status(404).json({ error: "Unknown executionId." }); addFeedback(execution.modelId, execution.domain, execution.depth, score); if (storageEnabled()) await saveFeedback(executionId, score); res.json({ ok: true, executionId, score }); });
 async function oracleHandler(req, res) {
   const requestStarted = Date.now(); const executionId = crypto.randomUUID(); const apiKeyId = req.oracleApiKeyId || null; metrics.requests++; let route = null; let finalModel = null;
-  try { const request = String(req.body?.request || "").trim(); const requestedModel = String(req.body?.model || "").trim(); if (!request) return res.status(400).json({ error: "Request is required." }); if (request.length > 12000) return res.status(400).json({ error: "Request is too long for V2. Keep it under 12,000 characters." });
-    const routed = await routeWithOracle(request); route = routed.route; metrics.byDomain[route.domain] = (metrics.byDomain[route.domain] || 0) + 1; metrics.byDepth[route.depth] = (metrics.byDepth[route.depth] || 0) + 1;
+  try { const request = String(req.body?.request || "").trim(); const requestedModel = String(req.body?.model || "").trim(); if (!request) return res.status(400).json({ error: "Request is required." });
+    let effectiveRequest = request;
+    let contextCompacted = false;
+    if (request.length > 12000) {
+      effectiveRequest = `EARLIER CONTEXT:\n${request.slice(0, 3500)}\n\n[older middle context omitted by Oracle]\n\nLATEST CONTEXT AND INSTRUCTIONS:\n${request.slice(-8000)}`;
+      contextCompacted = true;
+    }
+    const routed = await routeWithOracle(effectiveRequest); route = routed.route; metrics.byDomain[route.domain] = (metrics.byDomain[route.domain] || 0) + 1; metrics.byDepth[route.depth] = (metrics.byDepth[route.depth] || 0) + 1;
     const marketEvidence = route.domain === "revenue" ? await discoverMarketEvidence(effectiveRequest) : null;
     const decision = selectExecutionModel(route, requestedModel); const candidates = decision.allowFailover ? decision.candidates.slice(0, MAX_FAILOVER_MODELS) : decision.candidates; const attempts = []; let result = null;
     if (route.domain === "revenue" && decision.allowFailover && candidates.length > 1) {
