@@ -22,7 +22,8 @@ const DEPTHS = new Set(["light", "normal", "deep"]);
 const ROUTER_MODEL = process.env.ORACLE_MODEL || "gpt-5.6-sol";
 const JUDGE_MODEL = process.env.JUDGE_MODEL || "gpt-5.6-sol";
 const ROUTING_POLICY = process.env.ROUTING_POLICY || "balanced";
-const PROVIDER_TIMEOUT_MS = Math.max(5000, Number(process.env.PROVIDER_TIMEOUT_MS || 30000));
+const PROVIDER_TIMEOUT_MS = Math.max(5000, Number(process.env.PROVIDER_TIMEOUT_MS || 22000));
+const REVENUE_PROVIDER_TIMEOUT_MS = Math.max(5000, Number(process.env.REVENUE_PROVIDER_TIMEOUT_MS || 18000));
 const MAX_FAILOVER_MODELS = Math.max(1, Math.min(5, Number(process.env.MAX_FAILOVER_MODELS || 2)));
 
 const metrics = {
@@ -104,14 +105,14 @@ function parseJson(text) {
 }
 function normalizeUsage(usage = {}) { return { input_tokens: Number(usage.input_tokens || usage.prompt_tokens || usage.inputTokens || 0), output_tokens: Number(usage.output_tokens || usage.completion_tokens || usage.outputTokens || 0) }; }
 async function fetchWithTimeout(url, options) {
-  const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), PROVIDER_TIMEOUT_MS);
+  const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), timeoutMs);
   try { return await fetch(url, { ...options, signal: controller.signal }); }
-  catch (error) { if (error?.name === "AbortError") throw new Error(`Provider timed out after ${PROVIDER_TIMEOUT_MS}ms`); throw error; }
+  catch (error) { if (error?.name === "AbortError") throw new Error(`Provider timed out after ${timeoutMs}ms`); throw error; }
   finally { clearTimeout(timer); }
 }
-async function callOpenAI({ model, prompt, effort = "low", maxOutputTokens = 2200 }) {
+async function callOpenAI({ model, prompt, effort = "low", maxOutputTokens = 2200, timeoutMs = PROVIDER_TIMEOUT_MS }) {
   if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured.");
-  const response = await fetchWithTimeout("https://api.openai.com/v1/responses", { method: "POST", headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ model, input: prompt, reasoning: { effort }, max_output_tokens: maxOutputTokens, store: false }) });
+  const response = await fetchWithTimeout("https://api.openai.com/v1/responses", { method: "POST", headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ model, input: prompt, reasoning: { effort }, max_output_tokens: maxOutputTokens, store: false }) }, timeoutMs);
   const payload = await response.json(); if (!response.ok) throw new Error(payload?.error?.message || `OpenAI request failed with HTTP ${response.status}`);
   const text = extractOutputText(payload); if (!text) throw new Error("OpenAI returned no text."); return { text, usage: normalizeUsage(payload?.usage) };
 }
@@ -128,9 +129,9 @@ async function callGemini({ model, prompt, maxOutputTokens = 2200 }) {
   const payload = await response.json(); if (!response.ok) throw new Error(payload?.error?.message || `Gemini request failed with HTTP ${response.status}`);
   const text = (payload?.candidates?.[0]?.content?.parts || []).map(part => part?.text || "").filter(Boolean).join("\n").trim(); if (!text) throw new Error("Gemini returned no text."); return { text, usage: normalizeUsage(payload?.usageMetadata) };
 }
-async function callProvider({ provider, model, prompt, effort = "low", maxOutputTokens = 2200 }) {
+async function callProvider({ provider, model, prompt, effort = "low", maxOutputTokens = 2200, timeoutMs = PROVIDER_TIMEOUT_MS }) {
   const started = Date.now(); let result;
-  try { if (provider === "openai") result = await callOpenAI({ model, prompt, effort, maxOutputTokens }); else if (provider === "anthropic") result = await callAnthropic({ model, prompt, maxOutputTokens }); else if (provider === "gemini") result = await callGemini({ model, prompt, maxOutputTokens }); else throw new Error(`Unsupported provider: ${provider}`); }
+  try { if (provider === "openai") result = await callOpenAI({ model, prompt, effort, maxOutputTokens, timeoutMs }); else if (provider === "anthropic") result = await callAnthropic({ model, prompt, maxOutputTokens }); else if (provider === "gemini") result = await callGemini({ model, prompt, maxOutputTokens }); else throw new Error(`Unsupported provider: ${provider}`); }
   catch (error) { metrics.providerFailures[provider] = (metrics.providerFailures[provider] || 0) + 1; throw error; }
   const ms = Date.now() - started; metrics.calls++; metrics.inputTokens += result.usage.input_tokens; metrics.outputTokens += result.usage.output_tokens; return { ...result, ms, provider, model };
 }
@@ -174,7 +175,7 @@ async function routeWithOracle(request) {
 }
 async function execute({ request, route, executionModel, repair = "", marketEvidence = null }) {
   const limits = route.depth === "light" ? { tokens: 1200, length: "Prefer a concise answer, usually under 500 words unless the task inherently requires more." } : route.depth === "deep" ? { tokens: 3600, length: "Use necessary depth, but aggressively remove repetition and filler." } : { tokens: 2400, length: "Aim for a practical answer around 700-1200 words when appropriate; use less when possible." };
-  return callProvider({ provider: executionModel.provider, model: executionModel.model, effort: "low", maxOutputTokens: Math.min(limits.tokens, route.domain === "revenue" ? 1800 : limits.tokens), prompt: `You are a ${specialistProfile(route.domain)} inside Oracle Stack. Privately improve the raw request into strong execution instructions, then execute them yourself. Never expose the internal Stack. Return only the finished work.\nREQUEST:\n${request}\nROUTE:\n${JSON.stringify(route)}${repair ? `\nQA REPAIR NOTES:\n${repair}` : ""}\n${limits.length}\nPreserve intent. Do not invent facts or external actions. Make labeled assumptions for nonessential unknowns.${revenueInstructions(request, route)}${route.domain === "revenue" ? evidencePromptBlock(marketEvidence) : ""} Ask only if a truly essential detail prevents responsible execution. Prioritize concrete useful information over exhaustive text. Do not repeat the same recommendation in multiple sections.` });
+  return callProvider({ provider: executionModel.provider, model: executionModel.model, effort: "low", maxOutputTokens: Math.min(limits.tokens, route.domain === "revenue" ? 1200 : limits.tokens), timeoutMs: route.domain === "revenue" ? REVENUE_PROVIDER_TIMEOUT_MS : PROVIDER_TIMEOUT_MS, prompt: `You are a ${specialistProfile(route.domain)} inside Oracle Stack. Privately improve the raw request into strong execution instructions, then execute them yourself. Never expose the internal Stack. Return only the finished work.\nREQUEST:\n${request}\nROUTE:\n${JSON.stringify(route)}${repair ? `\nQA REPAIR NOTES:\n${repair}` : ""}\n${limits.length}\nPreserve intent. Do not invent facts or external actions. Make labeled assumptions for nonessential unknowns.${revenueInstructions(request, route)}${route.domain === "revenue" ? evidencePromptBlock(marketEvidence) : ""} Ask only if a truly essential detail prevents responsible execution. Prioritize concrete useful information over exhaustive text. Do not repeat the same recommendation in multiple sections.` });
 }
 async function judgeAnswer({ request, route, answer }) {
   const result = await callProvider({ provider: "openai", model: JUDGE_MODEL, maxOutputTokens: 400, prompt: `You are Oracle final QA. Return ONLY JSON {"pass":true,"issues":[],"repair_instructions":""}. Fail only for MATERIAL problems: not answering the request, changed intent, ignored explicit constraints, fabricated facts/actions, contradictions, or clearly unusable verbosity. Do not fail for minor style. ORIGINAL:\n${request}\nROUTE:\n${JSON.stringify(route)}\nANSWER:\n${answer}` });
@@ -187,7 +188,7 @@ async function runCandidate({ request, route, model, marketEvidence = null }) {
     const elapsedMs = Date.now() - started; const pass = route.domain === "revenue" ? Boolean(answer && answer.trim()) : Boolean(judged.qa.pass); updatePerformance({ modelId: model.id, domain: route.domain, depth: route.depth, success: pass, repaired, ms: elapsedMs }); return { ok: pass, answer, qa: judged.qa, repaired, calls, elapsedMs, error: pass ? null : "QA failed after repair" };
   } catch (error) { const elapsedMs = Date.now() - started; updatePerformance({ modelId: model.id, domain: route.domain, depth: route.depth, success: false, repaired, ms: elapsedMs }); return { ok: false, answer: "", qa: { pass: false, issues: [error.message], repair_instructions: "" }, repaired, calls, elapsedMs, error: error.message }; }
 }
-app.get("/api/health", (_req, res) => res.json({ ok: true, service: "oracle-stack", mode: "adaptive-multi-model-execution", liveMarketDiscovery: discoveryEnabled(), routingPolicy: ROUTING_POLICY, persistence: storageEnabled() ? "postgres" : "memory", developerApi: apiAuthEnabled() ? "enabled" : "disabled", failover: { enabled: true, maxModels: MAX_FAILOVER_MODELS, providerTimeoutMs: PROVIDER_TIMEOUT_MS }, providers: [...new Set(modelRegistry().map(model => model.provider))], models: modelRegistry().map(model => ({ id: model.id, provider: model.provider, model: model.model })) }));
+app.get("/api/health", (_req, res) => res.json({ ok: true, service: "oracle-stack", mode: "adaptive-multi-model-execution", liveMarketDiscovery: discoveryEnabled(), routingPolicy: ROUTING_POLICY, persistence: storageEnabled() ? "postgres" : "memory", developerApi: apiAuthEnabled() ? "enabled" : "disabled", failover: { enabled: true, maxModels: MAX_FAILOVER_MODELS, providerTimeoutMs: PROVIDER_TIMEOUT_MS, revenueProviderTimeoutMs: REVENUE_PROVIDER_TIMEOUT_MS }, providers: [...new Set(modelRegistry().map(model => model.provider))], models: modelRegistry().map(model => ({ id: model.id, provider: model.provider, model: model.model })) }));
 app.get("/api/models", (_req, res) => { const models = modelRegistry().map(({ id, provider, model, strengths, quality, speed, cost }) => ({ id, provider, model, strengths, quality, speed, cost })); res.json({ policy: ROUTING_POLICY, models }); });
 app.get("/api/metrics", async (_req, res) => { let persistentUsage = null; try { persistentUsage = await getUsageSummary(30); } catch (error) { console.error("Usage summary failed:", error.message); } res.json({ ...metrics, avgMs: metrics.successes ? Math.round(metrics.totalMs / metrics.successes) : 0, avgCalls: metrics.requests ? Number((metrics.calls / metrics.requests).toFixed(2)) : 0, persistence: storageEnabled() ? "postgres" : "memory", persistentUsage30d: persistentUsage, learnedRoutes: [...modelPerformance.entries()].map(([key, value]) => ({ key, ...value })) }); });
 app.get("/v1/usage", requireApiKey, async (req, res) => { const apiKeyId = req.oracleApiKeyId; const inMemory = metrics.byApiKey[apiKeyId] || { executions: 0, totalTokens: 0 }; let persistent = null; try { persistent = await getUsageSummary(30, apiKeyId); } catch (error) { console.error("API usage lookup failed:", error.message); } res.json({ apiKeyId, windowDays: 30, quota: quotaSnapshot(apiKeyId), currentProcess: inMemory, persistent }); });
