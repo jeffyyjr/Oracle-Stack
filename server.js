@@ -117,7 +117,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = PROVIDER_TIMEOUT_
 }
 async function callOpenAI({ model, prompt, effort = "low", maxOutputTokens = 2200, timeoutMs = PROVIDER_TIMEOUT_MS }) {
   if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured.");
-  const response = await fetchWithTimeout("https://api.openai.com/v1/responses", { method: "POST", headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ model, input: prompt, reasoning: { effort }, max_output_tokens: maxOutputTokens, store: false, text: { format: { type: "json_object" } } }) }, timeoutMs);
+  const response = await fetchWithTimeout("https://api.openai.com/v1/responses", { method: "POST", headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ model, input: /json/i.test(prompt) ? prompt : prompt + "\n\nReturn your response as valid JSON with a top-level \"answer\" field.", reasoning: { effort }, max_output_tokens: maxOutputTokens, store: false, text: { format: { type: "json_object" } } }) }, timeoutMs);
   const payload = await response.json(); if (!response.ok) throw new Error(payload?.error?.message || `OpenAI request failed with HTTP ${response.status}`);
   const text = extractOutputText(payload); if (!text) throw new Error("OpenAI returned no text."); return { text, usage: normalizeUsage(payload?.usage) };
 }
