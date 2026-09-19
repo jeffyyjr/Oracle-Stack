@@ -32,6 +32,11 @@ export async function initStorage() {
     ALTER TABLE oracle_executions ADD COLUMN IF NOT EXISTS api_key_id TEXT;
     CREATE INDEX IF NOT EXISTS oracle_executions_created_at_idx ON oracle_executions(created_at DESC);
     CREATE INDEX IF NOT EXISTS oracle_executions_api_key_idx ON oracle_executions(api_key_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS oracle_beta_requests (
+      id BIGSERIAL PRIMARY KEY, email TEXT NOT NULL, name TEXT, use_case TEXT, status TEXT NOT NULL DEFAULT 'pending',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS oracle_beta_requests_created_at_idx ON oracle_beta_requests(created_at DESC);
 
     CREATE TABLE IF NOT EXISTS oracle_artifacts (
       workspace_id TEXT PRIMARY KEY,
@@ -185,4 +190,18 @@ export async function latestPassingArtifact(opportunityPattern=null) {
   if(opportunityPattern){values.push(`%${opportunityPattern}%`);filter+=" AND opportunity ILIKE $1";}
   const result=await pool.query(`SELECT workspace_id,opportunity,status,manifest,parent_workspace_id,created_at FROM oracle_artifacts ${filter} ORDER BY created_at DESC LIMIT 1`,values);
   return result.rows[0]||null;
+}
+
+
+export async function saveBetaRequest({email,name="",useCase=""}) {
+  if (!enabled) throw new Error("Beta request storage is unavailable.");
+  const result=await pool.query("INSERT INTO oracle_beta_requests (email,name,use_case) VALUES ($1,$2,$3) RETURNING id,status,created_at",[email,name,useCase]);
+  return result.rows[0];
+}
+
+export async function listBetaRequests(limit=50) {
+  if (!enabled) return [];
+  const n=Math.max(1,Math.min(200,Number(limit)||50));
+  const result=await pool.query("SELECT id,email,name,use_case,status,created_at FROM oracle_beta_requests ORDER BY created_at DESC LIMIT $1",[n]);
+  return result.rows;
 }
