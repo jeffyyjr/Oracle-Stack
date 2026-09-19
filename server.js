@@ -323,9 +323,10 @@ async function runBenchmarkSuite({ repeats=1, modelIds=[], resume=true }={}) {
       try {
         const routed=await routeWithOracle(task.prompt), route=routed.route, decision=selectExecutionModel(route,requestedModel);
         const candidates=decision.allowFailover?decision.candidates.slice(0,MAX_FAILOVER_MODELS):decision.candidates;
-        let result=null,finalModel=null,failoverCount=0;
-        for(let i=0;i<candidates.length;i++){const candidate=await runCandidate({request:task.prompt,route,model:candidates[i],marketEvidence:null});if(candidate.ok){result=candidate;finalModel=candidates[i];break;}if(i<candidates.length-1&&decision.allowFailover)failoverCount++;}
-        row={taskId:task.id,repeat,expectedDomain:task.domain,requestedModel:label,ok:Boolean(result),selectedModel:finalModel?.id||null,routedDomain:route.domain,qaPass:Boolean(result?.ok),repaired:Boolean(result?.repaired),failoverCount,elapsedMs:Date.now()-started,totalTokens:result?.calls?.reduce((n,x)=>n+(x.usage?.total_tokens||0),0)||0};
+        let result=null,finalModel=null,failoverCount=0; const candidateErrors=[];
+        for(let i=0;i<candidates.length;i++){const candidate=await runCandidate({request:task.prompt,route,model:candidates[i],marketEvidence:null});if(candidate.ok){result=candidate;finalModel=candidates[i];break;}candidateErrors.push({model:candidates[i].id,error:candidate.error||candidate.qa?.issues?.join("; ")||"unknown failure"});if(i<candidates.length-1&&decision.allowFailover)failoverCount++;}
+        const tokenTotal=result?.calls?.reduce((n,x)=>n+Number(x.usage?.input_tokens||0)+Number(x.usage?.output_tokens||0),0)||0;
+        row={taskId:task.id,repeat,expectedDomain:task.domain,requestedModel:label,ok:Boolean(result),selectedModel:finalModel?.id||null,routedDomain:route.domain,qaPass:Boolean(result?.qa?.pass),repaired:Boolean(result?.repaired),failoverCount,elapsedMs:Date.now()-started,totalTokens:tokenTotal,error:result?null:candidateErrors.map(x=>`${x.model}: ${x.error}`).join(" | "),candidateErrors};
       } catch(error){row={taskId:task.id,repeat,expectedDomain:task.domain,requestedModel:label,ok:false,error:error.message,elapsedMs:Date.now()-started};}
       results.push(row); completed.add(key);
       benchmarkState.progress={completed:results.length,total,percent:Number((results.length/total*100).toFixed(1)),current:null,resumed:benchmarkState.progress.resumed};
