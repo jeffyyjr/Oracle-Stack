@@ -359,10 +359,16 @@ app.post("/api/beta-request", async (req,res) => {
   if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({error:"A valid email is required."});
   try {
     const request=await saveBetaRequest({email,name,useCase});
-    res.status(201).json({ok:true,status:request.status,message:"Beta access request received."});
+    const quota=Math.max(1,Math.min(100,Number(process.env.ORACLE_BETA_AUTO_QUOTA||10)));
+    const apiKey="ora_"+crypto.randomBytes(24).toString("base64url");
+    const apiKeyId="beta_"+request.id;
+    const apiKeyHash=crypto.createHash("sha256").update(apiKey).digest("hex");
+    await approveBetaRequest({id:request.id,apiKeyId,apiKeyHash,quota});
+    setDynamicApiKeys(await findActiveBetaKeyHashes());
+    res.status(201).json({ok:true,status:"approved",apiKey,apiKeyId,quota,message:"Beta access activated automatically. Copy this API key now; Oracle stores only its hash."});
   } catch(error) {
-    console.error("Beta request failed:",error.message);
-    res.status(503).json({error:"Beta request storage is temporarily unavailable."});
+    console.error("Beta auto-provision failed:",error.message);
+    res.status(503).json({error:"Beta access is temporarily unavailable."});
   }
 });
 app.get("/api/models", (_req, res) => {
