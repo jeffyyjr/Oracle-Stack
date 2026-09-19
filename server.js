@@ -16,7 +16,7 @@ import { executionAgentInstructions } from "./agents/execution-agent.js";
 import { materializeExecutionArtifacts, applyArtifactRepairs, rerunArtifactTests, finalizeArtifact } from "./artifact-workspace.js";
 import {
   initStorage, storageEnabled, loadRoutePerformance, saveRoutePerformance,
-  saveExecution, findExecution, saveFeedback, getUsageSummary, listArtifacts, loadArtifactBundle, artifactLineage, latestPassingArtifact, saveBetaRequest, listBetaRequests, approveBetaRequest, findActiveBetaKeyHashes
+  saveExecution, findExecution, saveFeedback, getUsageSummary, getMonthlyApiUsage, listArtifacts, loadArtifactBundle, artifactLineage, latestPassingArtifact, saveBetaRequest, listBetaRequests, approveBetaRequest, findActiveBetaKeyHashes
 } from "./storage.js";
 
 const app = express();
@@ -471,6 +471,19 @@ async function oracleHandler(req, res) {
     if (storageEnabled()) saveExecution({ ...telemetry, domain: route.domain, success: true }).catch(error => console.error("Failed to persist execution:", error.message)); console.log("ORACLE_METRIC", JSON.stringify(telemetry)); res.json({ original: request, answer: result.answer, route, model: { id: finalModel.id, provider: finalModel.provider, name: finalModel.model, reason: telemetry.routingReason }, qa: { pass: true, answerRepaired: result.repaired, issues: [] }, telemetry });
   } catch (error) { metrics.failures++; console.error("Oracle request failed:", error); res.status(500).json({ executionId, error: error?.message || "Oracle Stack failed to process the request." }); }
 }
-app.post("/api/oracle", requireApiKey, oracleHandler); app.post("/v1/oracle", requireApiKey, oracleHandler);
+async function requirePersistentQuota(req,res,next) {
+  try {
+    if (!storageEnabled() || !req.oracleApiKeyId) return next();
+    const usage=await getMonthlyApiUsage(req.oracleApiKeyId);
+    const limit=Number(req.oracleQuota?.limit||0);
+    if (limit>0 && Number(usage?.used||0)>=limit) return res.status(429).json({error:"Oracle API quota exceeded for the current UTC month.",apiKeyId:req.oracleApiKeyId,quota:limit,used:Number(usage.used||0)});
+    req.oraclePersistentUsage=usage;
+    next();
+  } catch(error) {
+    console.error("Persistent quota check failed:",error.message);
+    res.status(503).json({error:"Oracle usage verification is temporarily unavailable."});
+  }
+}
+app.post("/api/oracle", requireApiKey, requirePersistentQuota, oracleHandler); app.post("/v1/oracle", requireApiKey, requirePersistentQuota, oracleHandler);
 async function start() { try { const state = await initStorage(); if (state.enabled) { setDynamicApiKeys(await findActiveBetaKeyHashes()); const rows = await loadRoutePerformance(); for (const row of rows) modelPerformance.set(row.route_key, { attempts: Number(row.attempts || 0), successes: Number(row.successes || 0), failures: Number(row.failures || 0), repairs: Number(row.repairs || 0), feedbackTotal: Number(row.feedback_total || 0), feedbackCount: Number(row.feedback_count || 0), avgMs: Number(row.avg_ms || 0) }); console.log(`Oracle loaded ${rows.length} learned routes from Postgres.`); } else console.log("Oracle persistence: in-memory mode (DATABASE_URL not configured)."); } catch (error) { console.error("Oracle persistence unavailable; continuing in memory:", error.message); } app.listen(PORT, "0.0.0.0", () => { console.log(`Oracle Stack listening on 0.0.0.0:${PORT}`); if (process.env.ORACLE_BENCHMARK_ON_START === "true") { const taskIds=String(process.env.ORACLE_BENCHMARK_TASK_IDS||"").split(",").map(x=>x.trim()).filter(Boolean); const modelIds=String(process.env.ORACLE_BENCHMARK_MODEL_IDS||"").split(",").map(x=>x.trim()).filter(Boolean); console.log("ORACLE_BENCHMARK starting one-time benchmark.", JSON.stringify({taskIds:taskIds.length?taskIds:"all",modelIds:modelIds.length?modelIds:"all"})); runBenchmarkSuite({ repeats: 1, taskIds, modelIds, resume:false }).then(() => console.log("ORACLE_BENCHMARK_RESULT", JSON.stringify(benchmarkState.report?.summary || []))).catch(error => console.error("ORACLE_BENCHMARK_ERROR", error.message)); } }); }
 start();
