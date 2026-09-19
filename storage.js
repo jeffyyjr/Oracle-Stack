@@ -123,6 +123,18 @@ export async function getUsageSummary(days=30, apiKeyId=null) {
   return result.rows[0];
 }
 
+export async function getMonthlyApiUsage(apiKeyId) {
+  if (!enabled) return null;
+  const result=await pool.query(`
+    SELECT COUNT(*)::int AS used, COALESCE(SUM(total_tokens),0)::bigint AS total_tokens
+    FROM oracle_executions
+    WHERE api_key_id=$1
+      AND created_at >= date_trunc('month', NOW() AT TIME ZONE 'UTC')
+      AND created_at < date_trunc('month', NOW() AT TIME ZONE 'UTC') + interval '1 month'
+  `,[apiKeyId]);
+  return result.rows[0]||{used:0,total_tokens:0};
+}
+
 export async function saveArtifactBundle({ workspaceId, opportunity, status, manifest, files, tests, parentWorkspaceId=null }) {
   if (!enabled) return false;
   const client=await pool.connect();
