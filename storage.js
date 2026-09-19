@@ -37,6 +37,10 @@ export async function initStorage() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS oracle_beta_requests_created_at_idx ON oracle_beta_requests(created_at DESC);
+    ALTER TABLE oracle_beta_requests ADD COLUMN IF NOT EXISTS api_key_id TEXT;
+    ALTER TABLE oracle_beta_requests ADD COLUMN IF NOT EXISTS api_key_hash TEXT;
+    ALTER TABLE oracle_beta_requests ADD COLUMN IF NOT EXISTS quota INTEGER;
+    ALTER TABLE oracle_beta_requests ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
 
     CREATE TABLE IF NOT EXISTS oracle_artifacts (
       workspace_id TEXT PRIMARY KEY,
@@ -202,6 +206,19 @@ export async function saveBetaRequest({email,name="",useCase=""}) {
 export async function listBetaRequests(limit=50) {
   if (!enabled) return [];
   const n=Math.max(1,Math.min(200,Number(limit)||50));
-  const result=await pool.query("SELECT id,email,name,use_case,status,created_at FROM oracle_beta_requests ORDER BY created_at DESC LIMIT $1",[n]);
+  const result=await pool.query("SELECT id,email,name,use_case,status,api_key_id,quota,approved_at,created_at FROM oracle_beta_requests ORDER BY created_at DESC LIMIT $1",[n]);
+  return result.rows;
+}
+
+
+export async function approveBetaRequest({id,apiKeyId,apiKeyHash,quota}) {
+  if(!enabled) throw new Error("Beta storage unavailable.");
+  const result=await pool.query("UPDATE oracle_beta_requests SET status='approved',api_key_id=$2,api_key_hash=$3,quota=$4,approved_at=NOW() WHERE id=$1 AND status='pending' RETURNING id,email,name,use_case,status,api_key_id,quota,approved_at",[id,apiKeyId,apiKeyHash,quota]);
+  return result.rows[0]||null;
+}
+
+export async function findActiveBetaKeyHashes() {
+  if(!enabled) return [];
+  const result=await pool.query("SELECT api_key_id,api_key_hash,quota FROM oracle_beta_requests WHERE status='approved' AND api_key_hash IS NOT NULL");
   return result.rows;
 }
