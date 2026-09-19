@@ -234,3 +234,10 @@ export async function findActiveBetaKeyHashes() {
   const result=await pool.query("SELECT api_key_id,api_key_hash,quota FROM oracle_beta_requests WHERE status='approved' AND api_key_hash IS NOT NULL");
   return result.rows;
 }
+
+
+export async function revokeBetaRequest(id) {
+  if(!enabled) throw new Error("Beta storage unavailable.");
+  const result=await pool.query("UPDATE oracle_beta_requests SET status='revoked' WHERE id=$1 AND status='approved' RETURNING id,email,status,api_key_id,quota",[id]);
+  return result.rows[0]||null;
+}
