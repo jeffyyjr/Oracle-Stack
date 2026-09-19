@@ -16,7 +16,7 @@ import { executionAgentInstructions } from "./agents/execution-agent.js";
 import { materializeExecutionArtifacts, applyArtifactRepairs, rerunArtifactTests, finalizeArtifact } from "./artifact-workspace.js";
 import {
   initStorage, storageEnabled, loadRoutePerformance, saveRoutePerformance,
-  saveExecution, findExecution, saveFeedback, getUsageSummary, getMonthlyApiUsage, listArtifacts, loadArtifactBundle, artifactLineage, latestPassingArtifact, saveBetaRequest, listBetaRequests, approveBetaRequest, findActiveBetaKeyHashes
+  saveExecution, findExecution, saveFeedback, getUsageSummary, getMonthlyApiUsage, listArtifacts, loadArtifactBundle, artifactLineage, latestPassingArtifact, saveBetaRequest, listBetaRequests, approveBetaRequest, revokeBetaRequest, findActiveBetaKeyHashes
 } from "./storage.js";
 
 const app = express();
@@ -352,6 +352,7 @@ app.get("/api/benchmark",requireAdmin,async(_req,res)=>{if(!benchmarkState.repor
 function requireAdmin(req,res,next){ const expected=String(process.env.ORACLE_ADMIN_TOKEN||""); const provided=String(req.get("x-oracle-admin")||""); if(!expected) return res.status(503).json({error:"Admin access is not configured."}); const a=Buffer.from(provided),b=Buffer.from(expected); if(a.length!==b.length||!crypto.timingSafeEqual(a,b)) return res.status(401).json({error:"Unauthorized."}); next(); }
 app.get("/api/admin/beta-requests",requireAdmin,async(_req,res)=>{res.json({requests:await listBetaRequests(100)});});
 app.post("/api/admin/beta-requests/:id/approve",requireAdmin,async(req,res)=>{const id=Number(req.params.id),quota=Math.max(1,Math.min(10000,Number(req.body?.quota||100))); if(!Number.isInteger(id)) return res.status(400).json({error:"Invalid request id."}); const secret="ora_"+crypto.randomBytes(24).toString("base64url"), apiKeyId="beta_"+id, apiKeyHash=crypto.createHash("sha256").update(secret).digest("hex"); const approved=await approveBetaRequest({id,apiKeyId,apiKeyHash,quota}); if(!approved)return res.status(404).json({error:"Pending request not found."}); setDynamicApiKeys(await findActiveBetaKeyHashes()); res.json({approved,apiKey:secret,warning:"Copy this key now. Oracle stores only its hash and cannot show it again."});});
+app.post("/api/admin/beta-requests/:id/revoke",requireAdmin,async(req,res)=>{const id=Number(req.params.id);if(!Number.isInteger(id))return res.status(400).json({error:"Invalid request id."});const revoked=await revokeBetaRequest(id);if(!revoked)return res.status(404).json({error:"Approved request not found."});setDynamicApiKeys(await findActiveBetaKeyHashes());res.json({ok:true,revoked});});
 app.post("/api/beta-request", async (req,res) => {
   const email=String(req.body?.email||"").trim().toLowerCase();
   const name=String(req.body?.name||"").trim().slice(0,120);
