@@ -61,7 +61,7 @@ export async function discoverMarketEvidence(request, { count = 14 } = {}) {
   // Demand first: discover concrete current need across channels before researching fulfillment.
   const techIntent = /tech|software|saas|app|website|api|integration|automation|deploy|bug|code|data|ai|computer/i.test(goal);
   const sideHustleSeed = /side\s*hustle|business idea|opportunity radar|income idea|money[- ]making idea/i.test(goal) ? [
-    { channel: "sidehustleindex", signalType: "idea_seed", q: `site:sidehustleindex.com/idea/ ${goal.replace(/https?:\\/\\/\\S+/g, "").slice(0,180)}` }
+    { channel: "sidehustleindex", signalType: "idea_seed", q: `site:sidehustleindex.com/idea/ ${goal.slice(0,180)}` }
   ] : [];
   const querySpecs = techIntent ? [
     { channel: "upwork", signalType: "demand", q: `site:upwork.com/freelance-jobs/apply/ ("API" OR automation OR AWS OR SaaS OR backend) ("Fixed Price" OR hourly OR budget) -academic -homework` },
