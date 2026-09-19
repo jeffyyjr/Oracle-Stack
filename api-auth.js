@@ -43,9 +43,13 @@ function parseKeys() {
 }
 
 const API_KEYS = parseKeys();
+let DYNAMIC_KEYS = [];
+
+export function setDynamicApiKeys(rows=[]) { DYNAMIC_KEYS = rows.map(row => ({ id: row.api_key_id, secretHash: Buffer.from(row.api_key_hash, "hex"), quota: Math.max(1, Number(row.quota)||DEFAULT_QUOTA) })).filter(x => x.id && x.secretHash.length); }
+function allKeys() { return [...API_KEYS, ...DYNAMIC_KEYS]; }
 
 export function apiAuthEnabled() {
-  return API_KEYS.length > 0;
+  return allKeys().length > 0;
 }
 
 function safeMatch(secret, expectedHash) {
@@ -131,7 +135,7 @@ function meterResponse(key, body) {
 }
 
 export function requireApiKey(req, res, next) {
-  if (!API_KEYS.length) {
+  if (!allKeys().length) {
     return res.status(503).json({ error: "Developer API is not configured. Set ORACLE_API_KEYS." });
   }
 
@@ -141,7 +145,7 @@ export function requireApiKey(req, res, next) {
   const provided = bearer || headerKey;
   if (!provided) return res.status(401).json({ error: "Missing Oracle API key." });
 
-  const match = API_KEYS.find(key => safeMatch(provided, key.secretHash));
+  const match = allKeys().find(key => safeMatch(provided, key.secretHash));
   if (!match) return res.status(401).json({ error: "Invalid Oracle API key." });
 
   const meterQuota = req.method !== "GET";
@@ -169,11 +173,11 @@ export function requireApiKey(req, res, next) {
 }
 
 export function configuredApiKeyIds() {
-  return API_KEYS.map(key => key.id);
+  return allKeys().map(key => key.id);
 }
 
 export function quotaSnapshot(apiKeyId) {
-  const key = API_KEYS.find(item => item.id === apiKeyId);
+  const key = allKeys().find(item => item.id === apiKeyId);
   if (!key) return null;
   const state = stateFor(key);
   return {
