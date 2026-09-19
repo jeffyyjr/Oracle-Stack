@@ -322,7 +322,7 @@ async function runBenchmarkSuite({ repeats=1, modelIds=[], taskIds=[], resume=tr
       benchmarkState.progress.current={repeat,taskId:task.id,model:label};
       const started=Date.now(); let row;
       try {
-        const routed=await routeWithOracle(task.prompt), route=routed.route, decision=selectExecutionModel(route,requestedModel);
+        const routed=await routeWithOracle(task.prompt), route=routed.route, benchmarkModel=(requestedModel === "auto" || requestedModel === "oracle-auto") ? "" : requestedModel, decision=selectExecutionModel(route,benchmarkModel);
         const candidates=decision.allowFailover?decision.candidates.slice(0,MAX_FAILOVER_MODELS):decision.candidates;
         let result=null,finalModel=null,failoverCount=0; const candidateErrors=[];
         for(let i=0;i<candidates.length;i++){const candidate=await runCandidate({request:task.prompt,route,model:candidates[i],marketEvidence:null});if(candidate.ok){result=candidate;finalModel=candidates[i];break;}candidateErrors.push({model:candidates[i].id,error:candidate.error||candidate.qa?.issues?.join("; ")||"unknown failure"});if(i<candidates.length-1&&decision.allowFailover)failoverCount++;}
