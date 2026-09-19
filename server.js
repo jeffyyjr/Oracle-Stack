@@ -329,6 +329,7 @@ async function runBenchmarkSuite({ repeats=1, modelIds=[], taskIds=[], resume=tr
         const tokenTotal=result?.calls?.reduce((n,x)=>n+Number(x.usage?.input_tokens||0)+Number(x.usage?.output_tokens||0),0)||0;
         row={taskId:task.id,repeat,expectedDomain:task.domain,requestedModel:label,ok:Boolean(result),selectedModel:finalModel?.id||null,routedDomain:route.domain,qaPass:Boolean(result?.qa?.pass),repaired:Boolean(result?.repaired),failoverCount,elapsedMs:Date.now()-started,totalTokens:tokenTotal,error:result?null:candidateErrors.map(x=>`${x.model}: ${x.error}`).join(" | "),candidateErrors};
       } catch(error){row={taskId:task.id,repeat,expectedDomain:task.domain,requestedModel:label,ok:false,error:error.message,elapsedMs:Date.now()-started};}
+      if(!row.ok) console.error("ORACLE_BENCHMARK_RUN_FAILED",JSON.stringify({taskId:row.taskId,requestedModel:row.requestedModel,routedDomain:row.routedDomain||null,elapsedMs:row.elapsedMs,error:row.error||"unknown",candidateErrors:row.candidateErrors||[]}));
       results.push(row); completed.add(key);
       benchmarkState.progress={completed:results.length,total,percent:Number((results.length/total*100).toFixed(1)),current:null,resumed:benchmarkState.progress.resumed};
       benchmarkState.report={createdAt:new Date().toISOString(),repeats:cappedRepeats,routes,summary:benchmarkSummary(results),results};
