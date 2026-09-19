@@ -144,7 +144,8 @@ export function requireApiKey(req, res, next) {
   const match = API_KEYS.find(key => safeMatch(provided, key.secretHash));
   if (!match) return res.status(401).json({ error: "Invalid Oracle API key." });
 
-  const quota = takeQuota(match);
+  const meterQuota = req.method !== "GET";
+  const quota = meterQuota ? takeQuota(match) : (() => { const state = stateFor(match); return { allowed: true, used: state.count, limit: match.quota, window: state.window }; })();
   res.set("X-Oracle-Quota-Limit", String(quota.limit));
   res.set("X-Oracle-Quota-Used", String(quota.used));
   res.set("X-Oracle-Quota-Remaining", String(Math.max(0, quota.limit - quota.used)));
