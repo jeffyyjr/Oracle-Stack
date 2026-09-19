@@ -74,7 +74,8 @@ export async function discoverMarketEvidence(request, { count = 14 } = {}) {
     { channel: "web_demand", signalType: "demand", q: `${goal} ("looking for" OR "need help" OR "need a" OR "recommend" OR "request quote" OR "seeking") buyer customer` },
     { channel: "web_pain", signalType: "demand", q: `${goal} (problem OR complaint OR frustrated OR "can't find" OR "need someone") customer business` },
   ];
-  querySpecs.push(...sideHustleSeed);\n  const queries = querySpecs.map(x => x.q);
+  querySpecs.push(...sideHustleSeed);
+  const queries = querySpecs.map(x => x.q);
   const provider = process.env.BRAVE_SEARCH_API_KEY ? "brave" : "serper";
   const search = provider === "brave" ? searchBrave : searchSerper;
   const perQuery = techIntent ? 8 : Math.max(4, Math.ceil(count / 2));
