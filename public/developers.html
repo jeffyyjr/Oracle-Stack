@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Oracle Stack developer API: send one request and let Oracle choose the execution route."><title>Oracle API | Oracle Stack</title><link rel="stylesheet" href="/styles.css"></head>
+<body><main class="shell">
+<header class="topbar"><a class="brand" href="/"><span class="brand-mark">O</span><span>Oracle Stack</span></a><div class="top-actions"><span class="v1-pill">DEVELOPER API V1</span></div></header>
+<section class="hero"><p class="eyebrow">ONE API. ADAPTIVE EXECUTION.</p><h1>Send the task.<br>Oracle chooses the path.</h1><p class="subhead">Oracle classifies the work, chooses an execution model, applies QA and failover when needed, and returns routing telemetry with the result.</p></section>
+<section class="card" style="padding:28px;margin-bottom:24px"><h2>API v1</h2><p><strong>POST /v1/oracle</strong> — authenticated execution endpoint.</p><pre style="overflow:auto;white-space:pre-wrap"><code>curl -X POST https://oracle-stack.onrender.com/v1/oracle \
+  -H "Authorization: Bearer YOUR_ORACLE_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"request":"Design a reliable background-job API for my Node app."}'</code></pre><p>The response includes the finished answer plus the selected specialist, execution model, QA status, latency, token usage, routing reason and failover telemetry.</p></section>
+<section class="card" style="padding:28px;margin-bottom:24px"><h2>Usage</h2><p><strong>GET /v1/usage</strong> returns the authenticated key's quota and usage totals. This makes it possible to meter customer access without exposing provider credentials.</p><pre style="overflow:auto;white-space:pre-wrap"><code>curl https://oracle-stack.onrender.com/v1/usage \
+  -H "Authorization: Bearer YOUR_ORACLE_KEY"</code></pre></section>
+<section class="card" style="padding:28px"><h2>Private beta</h2><p>Oracle API is in controlled beta while real-world routing, reliability and cost data are collected. Access keys are issued manually during the beta.</p><p><a href="/">Try Oracle in the web interface →</a></p></section>
+</main></body></html>
