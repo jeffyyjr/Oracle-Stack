@@ -285,58 +285,66 @@ app.get("/api/artifacts/:workspaceId/lineage", async (req,res) => {
   try { const lineage=await artifactLineage(req.params.workspaceId); if(!lineage.length)return res.status(404).json({error:"Artifact not found."}); res.json({workspaceId:req.params.workspaceId,lineage}); }
   catch(error){ res.status(500).json({error:error.message}); }
 });
-const benchmarkState = { running: false, startedAt: null, finishedAt: null, error: null, report: null };
+const benchmarkState = { running:false, runId:null, startedAt:null, finishedAt:null, error:null, progress:null, report:null };
+const BENCHMARK_CHECKPOINT = path.join(__dirname, "benchmark-results", "checkpoint.json");
 
-async function runBenchmarkSuite({ repeats = 1, modelIds = [] } = {}) {
-  if (benchmarkState.running) throw new Error("Benchmark is already running.");
-  benchmarkState.running = true; benchmarkState.startedAt = new Date().toISOString(); benchmarkState.finishedAt = null; benchmarkState.error = null;
-  try {
-    const tasks = JSON.parse(await fs.readFile(path.join(__dirname, "benchmarks", "tasks.json"), "utf8"));
-    const configured = modelRegistry();
-    const routes = modelIds.length ? modelIds : ["", ...configured.map(m => m.id)];
-    const results = [];
-    for (let repeat = 1; repeat <= Math.max(1, Math.min(5, Number(repeats) || 1)); repeat++) {
-      for (const task of tasks) {
-        for (const requestedModel of routes) {
-          const started = Date.now();
-          try {
-            const routed = await routeWithOracle(task.prompt);
-            const route = routed.route;
-            const decision = selectExecutionModel(route, requestedModel);
-            const candidates = decision.allowFailover ? decision.candidates.slice(0, MAX_FAILOVER_MODELS) : decision.candidates;
-            let result = null, finalModel = null, failoverCount = 0;
-            for (let i = 0; i < candidates.length; i++) {
-              const candidate = await runCandidate({ request: task.prompt, route, model: candidates[i], marketEvidence: null });
-              if (candidate.ok) { result = candidate; finalModel = candidates[i]; break; }
-              if (i < candidates.length - 1 && decision.allowFailover) failoverCount++;
-            }
-            results.push({ taskId: task.id, repeat, expectedDomain: task.domain, requestedModel: requestedModel || "oracle-auto", ok: Boolean(result), selectedModel: finalModel?.id || null, routedDomain: route.domain, qaPass: Boolean(result?.ok), repaired: Boolean(result?.repaired), failoverCount, elapsedMs: Date.now() - started, totalTokens: result?.calls?.reduce((n,x)=>n+(x.usage?.total_tokens||0),0) || 0 });
-          } catch (error) {
-            results.push({ taskId: task.id, repeat, expectedDomain: task.domain, requestedModel: requestedModel || "oracle-auto", ok: false, error: error.message, elapsedMs: Date.now() - started });
-          }
-        }
-      }
-    }
-    const names = [...new Set(results.map(r => r.requestedModel))];
-    const summary = names.map(name => {
-      const all = results.filter(r => r.requestedModel === name), ok = all.filter(r => r.ok), lat = ok.map(r => r.elapsedMs).sort((a,b)=>a-b);
-      const pct = p => lat.length ? lat[Math.min(lat.length-1, Math.ceil(p*lat.length)-1)] : 0;
-      return { route:name, runs:all.length, successRate:all.length?Number((ok.length/all.length*100).toFixed(1)):0, qaPassRate:ok.length?Number((ok.filter(r=>r.qaPass).length/ok.length*100).toFixed(1)):0, domainAccuracy:ok.length?Number((ok.filter(r=>r.routedDomain===r.expectedDomain).length/ok.length*100).toFixed(1)):0, repairRate:ok.length?Number((ok.filter(r=>r.repaired).length/ok.length*100).toFixed(1)):0, failoverRate:ok.length?Number((ok.filter(r=>r.failoverCount>0).length/ok.length*100).toFixed(1)):0, avgMs:ok.length?Math.round(ok.reduce((n,r)=>n+r.elapsedMs,0)/ok.length):0, p50Ms:pct(.5), p95Ms:pct(.95), avgTokens:ok.length?Math.round(ok.reduce((n,r)=>n+r.totalTokens,0)/ok.length):0 };
-    });
-    benchmarkState.report = { createdAt:new Date().toISOString(), repeats, routes, summary, results };
-    benchmarkState.finishedAt = new Date().toISOString();
-  } catch (error) { benchmarkState.error = error.message; benchmarkState.finishedAt = new Date().toISOString(); }
-  finally { benchmarkState.running = false; }
+async function saveBenchmarkCheckpoint(payload) {
+  await fs.mkdir(path.dirname(BENCHMARK_CHECKPOINT), { recursive:true });
+  await fs.writeFile(BENCHMARK_CHECKPOINT, JSON.stringify(payload, null, 2));
 }
-
-app.post("/api/benchmark/run", requireApiKey, (req, res) => {
-  if (benchmarkState.running) return res.status(409).json({ error:"Benchmark is already running.", state:benchmarkState });
-  const repeats = Math.max(1, Math.min(5, Number(req.body?.repeats || 1)));
-  const modelIds = Array.isArray(req.body?.models) ? req.body.models.map(String) : [];
-  runBenchmarkSuite({ repeats, modelIds }).catch(error => { benchmarkState.error = error.message; benchmarkState.running = false; });
-  res.status(202).json({ status:"started", repeats, models:modelIds.length?modelIds:"all configured + oracle-auto" });
+async function loadBenchmarkCheckpoint() {
+  try { return JSON.parse(await fs.readFile(BENCHMARK_CHECKPOINT, "utf8")); } catch { return null; }
+}
+function benchmarkSummary(results) {
+  return [...new Set(results.map(r=>r.requestedModel))].map(name => {
+    const all=results.filter(r=>r.requestedModel===name), ok=all.filter(r=>r.ok), lat=ok.map(r=>r.elapsedMs).sort((x,y)=>x-y);
+    const pct=p=>lat.length?lat[Math.min(lat.length-1,Math.ceil(p*lat.length)-1)]:0;
+    return { route:name,runs:all.length,successRate:all.length?Number((ok.length/all.length*100).toFixed(1)):0,qaPassRate:ok.length?Number((ok.filter(r=>r.qaPass).length/ok.length*100).toFixed(1)):0,domainAccuracy:ok.length?Number((ok.filter(r=>r.routedDomain===r.expectedDomain).length/ok.length*100).toFixed(1)):0,repairRate:ok.length?Number((ok.filter(r=>r.repaired).length/ok.length*100).toFixed(1)):0,failoverRate:ok.length?Number((ok.filter(r=>r.failoverCount>0).length/ok.length*100).toFixed(1)):0,avgMs:ok.length?Math.round(ok.reduce((n,r)=>n+r.elapsedMs,0)/ok.length):0,p50Ms:pct(.5),p95Ms:pct(.95),avgTokens:ok.length?Math.round(ok.reduce((n,r)=>n+r.totalTokens,0)/ok.length):0 };
+  });
+}
+async function runBenchmarkSuite({ repeats=1, modelIds=[], resume=true }={}) {
+  if (benchmarkState.running) throw new Error("Benchmark is already running.");
+  const tasks=JSON.parse(await fs.readFile(path.join(__dirname,"benchmarks","tasks.json"),"utf8"));
+  const routes=modelIds.length?modelIds:["",...modelRegistry().map(m=>m.id)];
+  const cappedRepeats=Math.max(1,Math.min(5,Number(repeats)||1));
+  const signature=JSON.stringify({repeats:cappedRepeats,routes,tasks:tasks.map(t=>t.id)});
+  const previous=resume?await loadBenchmarkCheckpoint():null;
+  const results=previous?.signature===signature&&Array.isArray(previous.results)?previous.results:[];
+  const completed=new Set(results.map(r=>`${r.repeat}|${r.taskId}|${r.requestedModel}`));
+  const total=cappedRepeats*tasks.length*routes.length;
+  benchmarkState.running=true; benchmarkState.runId=previous?.signature===signature?previous.runId:crypto.randomUUID(); benchmarkState.startedAt=previous?.startedAt||new Date().toISOString(); benchmarkState.finishedAt=null; benchmarkState.error=null;
+  benchmarkState.progress={completed:results.length,total,percent:Number((results.length/total*100).toFixed(1)),current:null,resumed:results.length};
+  try {
+    for(let repeat=1;repeat<=cappedRepeats;repeat++) for(const task of tasks) for(const requestedModel of routes) {
+      const label=requestedModel||"oracle-auto", key=`${repeat}|${task.id}|${label}`;
+      if(completed.has(key)) continue;
+      benchmarkState.progress.current={repeat,taskId:task.id,model:label};
+      const started=Date.now(); let row;
+      try {
+        const routed=await routeWithOracle(task.prompt), route=routed.route, decision=selectExecutionModel(route,requestedModel);
+        const candidates=decision.allowFailover?decision.candidates.slice(0,MAX_FAILOVER_MODELS):decision.candidates;
+        let result=null,finalModel=null,failoverCount=0;
+        for(let i=0;i<candidates.length;i++){const candidate=await runCandidate({request:task.prompt,route,model:candidates[i],marketEvidence:null});if(candidate.ok){result=candidate;finalModel=candidates[i];break;}if(i<candidates.length-1&&decision.allowFailover)failoverCount++;}
+        row={taskId:task.id,repeat,expectedDomain:task.domain,requestedModel:label,ok:Boolean(result),selectedModel:finalModel?.id||null,routedDomain:route.domain,qaPass:Boolean(result?.ok),repaired:Boolean(result?.repaired),failoverCount,elapsedMs:Date.now()-started,totalTokens:result?.calls?.reduce((n,x)=>n+(x.usage?.total_tokens||0),0)||0};
+      } catch(error){row={taskId:task.id,repeat,expectedDomain:task.domain,requestedModel:label,ok:false,error:error.message,elapsedMs:Date.now()-started};}
+      results.push(row); completed.add(key);
+      benchmarkState.progress={completed:results.length,total,percent:Number((results.length/total*100).toFixed(1)),current:null,resumed:benchmarkState.progress.resumed};
+      benchmarkState.report={createdAt:new Date().toISOString(),repeats:cappedRepeats,routes,summary:benchmarkSummary(results),results};
+      await saveBenchmarkCheckpoint({signature,runId:benchmarkState.runId,startedAt:benchmarkState.startedAt,updatedAt:new Date().toISOString(),results});
+      console.log("ORACLE_BENCHMARK_PROGRESS",JSON.stringify(benchmarkState.progress));
+    }
+    benchmarkState.finishedAt=new Date().toISOString();
+    console.log("ORACLE_BENCHMARK_RESULT",JSON.stringify(benchmarkState.report.summary));
+  } catch(error){benchmarkState.error=error.message;benchmarkState.finishedAt=new Date().toISOString();console.error("ORACLE_BENCHMARK_ERROR",error.message);}
+  finally{benchmarkState.running=false;}
+}
+app.post("/api/benchmark/run",requireApiKey,(req,res)=>{
+  if(benchmarkState.running)return res.status(409).json({error:"Benchmark is already running.",state:benchmarkState});
+  const repeats=Math.max(1,Math.min(5,Number(req.body?.repeats||1))),modelIds=Array.isArray(req.body?.models)?req.body.models.map(String):[],resume=req.body?.resume!==false;
+  runBenchmarkSuite({repeats,modelIds,resume}).catch(error=>{benchmarkState.error=error.message;benchmarkState.running=false;});
+  res.status(202).json({status:"started",repeats,resume,models:modelIds.length?modelIds:"all configured + oracle-auto"});
 });
-app.get("/api/benchmark", requireApiKey, (_req, res) => res.json(benchmarkState));
+app.get("/api/benchmark",requireApiKey,async(_req,res)=>{if(!benchmarkState.report){const saved=await loadBenchmarkCheckpoint();if(saved?.results)benchmarkState.report={summary:benchmarkSummary(saved.results),results:saved.results};}res.json(benchmarkState);});
 
 app.get("/api/models", (_req, res) => { const models = modelRegistry().map(({ id, provider, model, strengths, quality, speed, cost }) => ({ id, provider, model, strengths, quality, speed, cost })); res.json({ policy: ROUTING_POLICY, models }); });
 app.get("/api/metrics", async (_req, res) => { let persistentUsage = null; try { persistentUsage = await getUsageSummary(30); } catch (error) { console.error("Usage summary failed:", error.message); } res.json({ ...metrics, avgMs: metrics.successes ? Math.round(metrics.totalMs / metrics.successes) : 0, avgCalls: metrics.requests ? Number((metrics.calls / metrics.requests).toFixed(2)) : 0, persistence: storageEnabled() ? "postgres" : "memory", persistentUsage30d: persistentUsage, learnedRoutes: [...modelPerformance.entries()].map(([key, value]) => ({ key, ...value })) }); });
