@@ -302,9 +302,10 @@ function benchmarkSummary(results) {
     return { route:name,runs:all.length,successRate:all.length?Number((ok.length/all.length*100).toFixed(1)):0,qaPassRate:ok.length?Number((ok.filter(r=>r.qaPass).length/ok.length*100).toFixed(1)):0,domainAccuracy:ok.length?Number((ok.filter(r=>r.routedDomain===r.expectedDomain).length/ok.length*100).toFixed(1)):0,repairRate:ok.length?Number((ok.filter(r=>r.repaired).length/ok.length*100).toFixed(1)):0,failoverRate:ok.length?Number((ok.filter(r=>r.failoverCount>0).length/ok.length*100).toFixed(1)):0,avgMs:ok.length?Math.round(ok.reduce((n,r)=>n+r.elapsedMs,0)/ok.length):0,p50Ms:pct(.5),p95Ms:pct(.95),avgTokens:ok.length?Math.round(ok.reduce((n,r)=>n+r.totalTokens,0)/ok.length):0 };
   });
 }
-async function runBenchmarkSuite({ repeats=1, modelIds=[], resume=true }={}) {
+async function runBenchmarkSuite({ repeats=1, modelIds=[], taskIds=[], resume=true }={}) {
   if (benchmarkState.running) throw new Error("Benchmark is already running.");
-  const tasks=JSON.parse(await fs.readFile(path.join(__dirname,"benchmarks","tasks.json"),"utf8"));
+  let tasks=JSON.parse(await fs.readFile(path.join(__dirname,"benchmarks","tasks.json"),"utf8"));
+  if(taskIds.length) tasks=tasks.filter(t=>taskIds.includes(t.id));
   const routes=modelIds.length?modelIds:["",...modelRegistry().map(m=>m.id)];
   const cappedRepeats=Math.max(1,Math.min(5,Number(repeats)||1));
   const signature=JSON.stringify({repeats:cappedRepeats,routes,tasks:tasks.map(t=>t.id)});
@@ -341,9 +342,9 @@ async function runBenchmarkSuite({ repeats=1, modelIds=[], resume=true }={}) {
 }
 app.post("/api/benchmark/run",requireApiKey,(req,res)=>{
   if(benchmarkState.running)return res.status(409).json({error:"Benchmark is already running.",state:benchmarkState});
-  const repeats=Math.max(1,Math.min(5,Number(req.body?.repeats||1))),modelIds=Array.isArray(req.body?.models)?req.body.models.map(String):[],resume=req.body?.resume!==false;
-  runBenchmarkSuite({repeats,modelIds,resume}).catch(error=>{benchmarkState.error=error.message;benchmarkState.running=false;});
-  res.status(202).json({status:"started",repeats,resume,models:modelIds.length?modelIds:"all configured + oracle-auto"});
+  const repeats=Math.max(1,Math.min(5,Number(req.body?.repeats||1))),modelIds=Array.isArray(req.body?.models)?req.body.models.map(String):[],taskIds=Array.isArray(req.body?.taskIds)?req.body.taskIds.map(String):[],resume=req.body?.resume!==false;
+  runBenchmarkSuite({repeats,modelIds,taskIds,resume}).catch(error=>{benchmarkState.error=error.message;benchmarkState.running=false;});
+  res.status(202).json({status:"started",repeats,resume,models:modelIds.length?modelIds:"all configured + oracle-auto",taskIds:taskIds.length?taskIds:"all"});
 });
 app.get("/api/benchmark",requireApiKey,async(_req,res)=>{if(!benchmarkState.report){const saved=await loadBenchmarkCheckpoint();if(saved?.results)benchmarkState.report={summary:benchmarkSummary(saved.results),results:saved.results};}res.json(benchmarkState);});
 
