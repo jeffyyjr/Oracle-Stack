@@ -255,7 +255,7 @@ function looksLikeListing(item) {
     return detailPath && commercialText && !academicRisk;
   }
 
-  if (item?.channel === "github") return /\/issues\/\d+/.test(u);
+  if (item?.channel === "github") return /\/issues\/\d+/.test(u) && /(bounty|paid bounty|paid task|reward|sponsor|compensation|\$\s?\d)/.test(t);
   if (item?.channel === "reddit") return /\/comments\//.test(u) && /(hire|hiring|paid|budget|looking for someone|need someone|will pay)/.test(t);
   if (item?.channel === "public_rfp") return /(rfp|tender|procurement|solicitation|request for proposal|request for quote)/.test(t);
   return false;
