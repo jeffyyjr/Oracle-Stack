@@ -55,7 +55,8 @@ function syncReplies_() {
     for (let i = previous; i < messages.length; i++) {
       const msg = messages[i];
       if (msg.isDraft()) continue;
-      if (msg.getFrom().indexOf(Session.getActiveUser().getEmail()) !== -1) continue;
+      const owner = String(Session.getEffectiveUser().getEmail() || '').toLowerCase();
+      if (owner && String(msg.getFrom() || '').toLowerCase().indexOf(owner) !== -1) continue;
 
       const payload = JSON.stringify({
         inReplyTo: threadId,
