@@ -78,15 +78,26 @@ function relevanceTerms(value = "") {
 }
 
 export function campaignEvidenceRelevant(campaign = {}, item = {}) {
-  const hay = new Set(relevanceTerms(`${item.title || ""} ${item.snippet || ""}`));
+  const hayText = `${item.title || ""} ${item.snippet || ""}`.toLowerCase();
+  const hay = new Set(relevanceTerms(hayText));
   const buyerTerms = relevanceTerms(campaign.targetBuyer || campaign.target_buyer || "");
   const problemTerms = relevanceTerms(`${campaign.offer || ""} ${campaign.objective || ""}`);
   const buyerMatches = buyerTerms.filter(x => hay.has(x)).length;
   const problemMatches = problemTerms.filter(x => hay.has(x)).length;
-  if (!buyerTerms.length && !problemTerms.length) return true;
-  if (buyerMatches >= 1) return true;
-  if (problemMatches >= 2) return true;
-  return false;
+  const channel = String(item.channel || item.evidence?.channel || "").toLowerCase();
+
+  if (/micro bounty|bounty alert|best .* tools|ranked for 20\d\d|software crm|autonomous ai systems/i.test(hayText)) return false;
+  if (buyerTerms.length) {
+    if (buyerMatches < 1) return false;
+    if (problemTerms.length && problemMatches < 1) return false;
+  } else if (problemTerms.length && problemMatches < 2) {
+    return false;
+  }
+
+  if (channel === "github" && !/software|developer|coding|api|github|bounty/i.test(String(campaign.targetBuyer || campaign.target_buyer || "") + " " + String(campaign.offer || ""))) {
+    return false;
+  }
+  return true;
 }
 
 function explicitCommercialIntent(item) {
