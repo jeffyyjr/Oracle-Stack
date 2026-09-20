@@ -336,6 +336,24 @@ async function enrichBusinessProspects(items = [], verticals = [], limit = 12) {
   return out.slice(0,limit);
 }
 
+function priorityBuyerSeeds() {
+  const raw=String(process.env.SALES_PRIORITY_BUYER_SEEDS_JSON||"").trim();
+  if(!raw) return [];
+  try {
+    const parsed=JSON.parse(raw);
+    if(!Array.isArray(parsed)) return [];
+    return parsed.slice(0,25).map(x=>({
+      title:cleanText(x?.title||"Priority buyer opportunity").slice(0,240),
+      url:String(x?.url||"").trim(),
+      snippet:cleanText(x?.snippet||x?.summary||"").slice(0,3000),
+      source:"priority_buyer_seed",
+      channel:String(x?.channel||"upwork").trim().toLowerCase(),
+      signalType:"demand",
+      priorityBuyer:true
+    })).filter(x=>/^https?:\/\//i.test(x.url));
+  } catch { return []; }
+}
+
 export function buildDiscoveryQuerySpecs(request = "") {
   const goal = compactGoal(request, 220);
   const techTerms = "API integration automation SaaS AWS deployment backend database AI workflow bug fix";
@@ -349,35 +367,49 @@ export function buildDiscoveryQuerySpecs(request = "") {
   if (campaignSpecific && campaignVerticals.length) {
     const verticals=campaignVerticals;
     const verticalGroup="(" + verticals.map(v=>`"${v}"`).join(" OR ") + ")";
+    const buyerSpecs=[
+      {
+        channel:"upwork",
+        signalType:"demand",
+        q:`site:upwork.com/freelance-jobs/apply/ ${verticalGroup} ("AI automation" OR "AI agent" OR "lead follow-up" OR "appointment booking" OR "missed-call" OR CRM OR "AI receptionist" OR "speed-to-lead") (budget OR hourly OR "Fixed Price" OR hiring) -academic -homework`
+      },
+      {
+        channel:"upwork",
+        signalType:"demand",
+        q:`site:upwork.com/freelance-jobs/apply/ ("home service" OR contractor) ("AI voice" OR "AI employee" OR "appointment scheduling" OR "lead qualification" OR "CRM automation") (budget OR hourly OR "Fixed Price" OR hiring)`
+      },
+      {
+        channel:"freelancer",
+        signalType:"demand",
+        q:`site:freelancer.com/projects/ ${verticalGroup} ("AI automation" OR CRM OR booking OR leads OR follow-up) (budget OR fixed OR hourly)`
+      },
+      {
+        channel:"reddit",
+        signalType:"demand",
+        q:`site:reddit.com/r/forhire/comments/ ${verticalGroup} (hiring OR paid OR budget) (automation OR CRM OR leads OR booking OR follow-up)`
+      },
+      {
+        channel:"public_rfp",
+        signalType:"demand",
+        q:`("request for proposal" OR RFP OR solicitation) ${verticalGroup} ("CRM" OR automation OR booking OR "customer communication") (deadline OR due)`
+      }
+    ];
+    const prospectSpecs=verticals.slice(0,5).map(vertical=>({
+      channel:"business_web",
+      signalType:"prospect",
+      q:`"${vertical}" company ("request service" OR "schedule service" OR "24/7" OR financing OR "areas we serve") ("contact us" OR contact OR schedule) -site:yelp.com -site:angi.com -site:homeadvisor.com -site:thumbtack.com -site:bbb.org -site:facebook.com -site:linkedin.com`
+    }));
     return {
       techIntent:true,
       broad:false,
       campaignSpecific:true,
-      prospecting:false,
+      buyerFirst:true,
+      prospecting:true,
       verticals,
-      strategy:"home_service_direct_buyer_demand",
-      specs:[
-        {
-          channel:"upwork",
-          signalType:"demand",
-          q:`site:upwork.com/freelance-jobs/apply/ ${verticalGroup} ("AI automation" OR "AI agent" OR "lead follow-up" OR "appointment booking" OR "missed-call" OR CRM OR "AI receptionist" OR "speed-to-lead") (budget OR hourly OR "Fixed Price" OR hiring) -academic -homework`
-        },
-        {
-          channel:"upwork",
-          signalType:"demand",
-          q:`site:upwork.com/freelance-jobs/apply/ ("home service" OR contractor) ("AI voice" OR "AI employee" OR "appointment scheduling" OR "lead qualification" OR "CRM automation") (budget OR hourly OR "Fixed Price" OR hiring)`
-        },
-        {
-          channel:"freelancer",
-          signalType:"demand",
-          q:`site:freelancer.com/projects/ ${verticalGroup} ("AI automation" OR CRM OR booking OR leads OR follow-up) (budget OR fixed OR hourly)`
-        },
-        {
-          channel:"public_rfp",
-          signalType:"demand",
-          q:`("request for proposal" OR RFP OR solicitation) ${verticalGroup} ("CRM" OR automation OR booking OR "customer communication") (deadline OR due)`
-        }
-      ]
+      strategy:"home_service_buyer_first",
+      buyerSpecs,
+      prospectSpecs,
+      specs:buyerSpecs
     };
   }
 
@@ -662,6 +694,65 @@ export async function discoverMarketEvidence(request, { count = 14 } = {}) {
       }
     }
     return collected.slice(start);
+  }
+
+  if (plan.buyerFirst) {
+    const seeded=priorityBuyerSeeds();
+    for(const item of seeded) {
+      if(!item.url || seen.has(item.url)) continue;
+      seen.add(item.url);
+      if(!looksLikeListing(item)) { rejectedCount++; continue; }
+      collected.push(item);
+    }
+
+    const buyerRaw=await collect(plan.buyerSpecs||[],8);
+    const allBuyerRaw=[...seeded,...buyerRaw].filter((item,index,array)=>item.url&&array.findIndex(x=>x.url===item.url)===index);
+    const buyerVerified=await verifyListings(allBuyerRaw,Math.min(20,Math.max(12,count)));
+    const verificationByUrl=new Map(buyerVerified.map(x=>[x.url,x.verification]));
+    const buyers=allBuyerRaw.map(x=>{
+      const item={...x,verification:verificationByUrl.get(x.url)||null};
+      return {...item,qualification:classifyDemandEvidence(item),buyerPriority:true};
+    });
+
+    const qualificationRank={QUALIFIED:4,VERIFY:3,CONTEXT_ONLY:2,REJECTED:1};
+    buyers.sort((a,b)=>{
+      const q=(qualificationRank[b.qualification]||0)-(qualificationRank[a.qualification]||0);
+      if(q) return q;
+      if(Boolean(b.priorityBuyer)!==Boolean(a.priorityBuyer)) return b.priorityBuyer?1:-1;
+      return 0;
+    });
+
+    const qualifiedBuyers=buyers.filter(x=>x.qualification==="QUALIFIED");
+    const buyerCandidates=buyers.filter(x=>x.qualification==="VERIFY");
+    let prospects=[];
+    if(qualifiedBuyers.length<count) {
+      const prospectRaw=await collect(plan.prospectSpecs||[],6);
+      prospects=await enrichBusinessProspects(prospectRaw,plan.verticals||[],Math.max(count-qualifiedBuyers.length,8));
+      prospects.sort((a,b)=>(b.prospectScore||0)-(a.prospectScore||0));
+    }
+
+    const finalResults=[
+      ...qualifiedBuyers,
+      ...prospects.filter(x=>x.qualification==="PROSPECT_QUALIFIED"),
+      ...buyerCandidates,
+      ...prospects.filter(x=>x.qualification!=="PROSPECT_QUALIFIED")
+    ].slice(0,count);
+
+    return {
+      enabled:true,
+      provider,
+      strategy:qualifiedBuyers.length?"home_service_buyer_first":"home_service_buyer_first_prospect_fallback",
+      buyerFirst:true,
+      prospecting:qualifiedBuyers.length===0,
+      queries,
+      results:finalResults,
+      qualifyingDemandCount:qualifiedBuyers.length,
+      verifyDemandCount:buyerCandidates.length,
+      prospectQualifiedCount:prospects.filter(x=>x.qualification==="PROSPECT_QUALIFIED").length,
+      rejectedCount,
+      rescueTriggered:false,
+      rescueResultCount:0
+    };
   }
 
   if (plan.prospecting) {
