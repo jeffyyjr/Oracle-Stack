@@ -142,6 +142,41 @@ function extractPublicRoleEmail(html = "", hostname = "") {
   return null;
 }
 
+function decodeHtmlText(value = "") {
+  return cleanText(String(value)
+    .replace(/&amp;/gi,"&")
+    .replace(/&quot;/gi,'"')
+    .replace(/&#39;|&apos;/gi,"'")
+    .replace(/&nbsp;/gi," "));
+}
+
+function extractBusinessName(html = "", seedTitle = "", hostname = "") {
+  const raw=String(html);
+  const candidates=[];
+  const siteName=raw.match(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']/i)
+    || raw.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:site_name["']/i);
+  if(siteName?.[1]) candidates.push(decodeHtmlText(siteName[1]));
+  const appName=raw.match(/<meta[^>]+name=["']application-name["'][^>]+content=["']([^"']+)["']/i);
+  if(appName?.[1]) candidates.push(decodeHtmlText(appName[1]));
+  const title=raw.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
+  if(title) {
+    const decoded=decodeHtmlText(title);
+    candidates.push(...decoded.split(/\s+[|–—-]\s+/).map(x=>x.trim()));
+    candidates.push(decoded);
+  }
+  candidates.push(decodeHtmlText(seedTitle));
+
+  const generic=/^(contact(?: us)?|schedule(?: service)?|book(?: service| now)?|free estimates?|request (?:service|a quote|an estimate)|home|services?|hvac services?|plumbing services?|roofing services?)$/i;
+  const noisy=/\b(official site|contact page|schedule online|free estimate)\b/i;
+  for(const candidate of candidates) {
+    const c=cleanText(candidate).replace(/^[-|:]+|[-|:]+$/g,"").trim();
+    if(c.length<2||c.length>90||generic.test(c)||noisy.test(c)) continue;
+    if(/[a-z]/i.test(c)) return c;
+  }
+  const label=baseHost(hostname).split(".")[0]||"Business";
+  return label.split(/[-_]+/).filter(Boolean).map(x=>x.charAt(0).toUpperCase()+x.slice(1)).join(" ");
+}
+
 function visiblePageText(html = "") {
   return cleanText(String(html)
     .replace(/<script[\s\S]*?<\/script>/gi," ")
@@ -222,7 +257,7 @@ async function inspectBusinessProspect(seed = {}, verticals = []) {
 
   const signals=prospectFitSignals(pageText);
   const verified=Boolean(email && signals.length>=1);
-  const businessName=cleanText(seed.title).replace(/\s+[|–—-]\s+.*$/,"").slice(0,180) || host;
+  const businessName=extractBusinessName(first.html,seed.title,new URL(first.url).hostname).slice(0,180);
   const score=Math.min(92,55 + (email?15:0) + Math.min(20,signals.length*5) + (signals.includes("urgent_lead_flow")?5:0));
   return {
     ...seed,
