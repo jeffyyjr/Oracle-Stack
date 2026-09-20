@@ -13,10 +13,14 @@ import { techHunterInstructions } from "./agents/tech-problem-hunter.js";
 import { techFixerInstructions } from "./agents/tech-fixer.js";
 import { dealQualifierInstructions } from "./agents/deal-qualifier.js";
 import { executionAgentInstructions } from "./agents/execution-agent.js";
+import { normalizeCampaign, evidenceToLead, nextStage, summarizePipeline } from "./sales-force.js";
 import { materializeExecutionArtifacts, applyArtifactRepairs, rerunArtifactTests, finalizeArtifact } from "./artifact-workspace.js";
 import {
   initStorage, storageEnabled, loadRoutePerformance, saveRoutePerformance,
-  saveExecution, findExecution, saveFeedback, getUsageSummary, getMonthlyApiUsage, listArtifacts, loadArtifactBundle, artifactLineage, latestPassingArtifact, saveBetaRequest, listBetaRequests, approveBetaRequest, revokeBetaRequest, findActiveBetaKeyHashes
+  saveExecution, findExecution, saveFeedback, getUsageSummary, getMonthlyApiUsage, listArtifacts, loadArtifactBundle, artifactLineage, latestPassingArtifact, saveBetaRequest, listBetaRequests, approveBetaRequest, revokeBetaRequest, findActiveBetaKeyHashes,
+  createSalesCampaign, listSalesCampaigns, getSalesCampaign, updateSalesCampaignStatus, listDueSalesCampaigns,
+  markSalesCampaignRun, upsertSalesLead, listSalesLeads, getSalesLead, updateSalesLead,
+  recordSalesEvent, listSalesEvents
 } from "./storage.js";
 
 const app = express();
@@ -269,7 +273,7 @@ async function runCandidate({ request, route, model, marketEvidence = null }) {
     const elapsedMs = Date.now() - started; const pass = route.domain === "revenue" ? Boolean(answer && answer.trim()) : Boolean(judged.qa.pass); updatePerformance({ modelId: model.id, domain: route.domain, depth: route.depth, success: pass, repaired, ms: elapsedMs }); return { ok: pass, answer, qa: judged.qa, repaired, calls, elapsedMs, error: pass ? null : "QA failed after repair" };
   } catch (error) { const elapsedMs = Date.now() - started; updatePerformance({ modelId: model.id, domain: route.domain, depth: route.depth, success: false, repaired, ms: elapsedMs }); return { ok: false, answer: "", qa: { pass: false, issues: [error.message], repair_instructions: "" }, repaired, calls, elapsedMs, error: error.message }; }
 }
-app.get("/api/health", (_req, res) => res.json({ ok: true, service: "oracle-stack", mode: "adaptive-multi-model-execution", liveMarketDiscovery: discoveryEnabled(), routingPolicy: ROUTING_POLICY, persistence: storageEnabled() ? "postgres" : "memory", developerApi: apiAuthEnabled() ? "enabled" : "disabled", failover: { enabled: true, maxModels: MAX_FAILOVER_MODELS, providerTimeoutMs: PROVIDER_TIMEOUT_MS, revenueProviderTimeoutMs: REVENUE_PROVIDER_TIMEOUT_MS, revenueHedging: true, revenueHedgeDelayMs: Math.max(1000, Number(process.env.REVENUE_HEDGE_DELAY_MS || 5000)) }, providers: [...new Set(modelRegistry().map(model => model.provider))], models: modelRegistry().map(model => ({ id: model.id, provider: model.provider, model: model.model })) }));
+app.get("/api/health", (_req, res) => res.json({ ok: true, service: "oracle-stack", mode: "autonomous-sales-force", liveMarketDiscovery: discoveryEnabled(), salesForce: { enabled: process.env.SALES_FORCE_ENABLED !== "false", persistent: storageEnabled(), outreachConnector: Boolean(process.env.SALES_OUTREACH_WEBHOOK_URL) }, routingPolicy: ROUTING_POLICY, persistence: storageEnabled() ? "postgres" : "memory", developerApi: apiAuthEnabled() ? "enabled" : "disabled", failover: { enabled: true, maxModels: MAX_FAILOVER_MODELS, providerTimeoutMs: PROVIDER_TIMEOUT_MS, revenueProviderTimeoutMs: REVENUE_PROVIDER_TIMEOUT_MS, revenueHedging: true, revenueHedgeDelayMs: Math.max(1000, Number(process.env.REVENUE_HEDGE_DELAY_MS || 5000)) }, providers: [...new Set(modelRegistry().map(model => model.provider))], models: modelRegistry().map(model => ({ id: model.id, provider: model.provider, model: model.model })) }));
 app.get("/api/artifacts", async (req,res) => {
   if(!storageEnabled()) return res.status(503).json({error:"Postgres persistence is not enabled."});
   try { res.json({artifacts:await listArtifacts(req.query.limit)}); }
@@ -350,6 +354,85 @@ app.post("/api/benchmark/run",requireAdmin,(req,res)=>{
 app.get("/api/benchmark",requireAdmin,async(_req,res)=>{if(!benchmarkState.report){const saved=await loadBenchmarkCheckpoint();if(saved?.results)benchmarkState.report={summary:benchmarkSummary(saved.results),results:saved.results};}res.json(benchmarkState);});
 
 function requireAdmin(req,res,next){ const expected=String(process.env.ORACLE_ADMIN_TOKEN||""); const provided=String(req.get("x-oracle-admin")||""); if(!expected) return res.status(503).json({error:"Admin access is not configured."}); const a=Buffer.from(provided),b=Buffer.from(expected); if(a.length!==b.length||!crypto.timingSafeEqual(a,b)) return res.status(401).json({error:"Unauthorized."}); next(); }
+
+function salesCampaignShape(row) {
+  return {
+    ...row,
+    minimumLeadScore:Number(row.minimum_lead_score ?? row.minimumLeadScore ?? 55),
+    maxLeadsPerRun:Number(row.max_leads_per_run ?? row.maxLeadsPerRun ?? 8),
+    outreachMode:row.outreach_mode ?? row.outreachMode ?? "draft",
+    authorizedAutoOutreach:Boolean(row.authorized_auto_outreach ?? row.authorizedAutoOutreach),
+    offer:row.offer||"",
+    targetBuyer:row.target_buyer ?? row.targetBuyer ?? "",
+    constraints:row.constraints_text ?? row.constraints ?? ""
+  };
+}
+
+async function sendSalesOutreach(campaign,lead) {
+  const url=String(process.env.SALES_OUTREACH_WEBHOOK_URL||"").trim();
+  if(!url)return {sent:false,reason:"No outreach connector is configured; the message remains ready for review."};
+  const payload={event:"oracle.sales.outreach",campaign:{id:campaign.id,name:campaign.name},lead:{id:lead.id,name:lead.name,sourceUrl:lead.source_url||lead.sourceUrl,buyerProblem:lead.buyer_problem||lead.buyerProblem},message:lead.outreach_draft||lead.outreachDraft};
+  const body=JSON.stringify(payload),secret=String(process.env.SALES_OUTREACH_WEBHOOK_SECRET||"");
+  const headers={"Content-Type":"application/json","User-Agent":"Oracle-Stack-Sales-Force/1.0"};
+  if(secret)headers["X-Oracle-Signature"]=`sha256=${crypto.createHmac("sha256",secret).update(body).digest("hex")}`;
+  const response=await fetchWithTimeout(url,{method:"POST",headers,body},15000);
+  const raw=await response.text();
+  if(!response.ok)throw new Error(`Outreach connector returned HTTP ${response.status}: ${raw.slice(0,300)}`);
+  let result={};try{result=raw?JSON.parse(raw):{};}catch{result={response:raw.slice(0,300)};}
+  const updated=await updateSalesLead(lead.id,{stage:"contacted",outreachStatus:"sent",externalMessageId:String(result.messageId||result.id||"")||null});
+  await recordSalesEvent({campaignId:campaign.id,leadId:lead.id,eventType:"outreach_sent",detail:{connector:"webhook",externalMessageId:result.messageId||result.id||null}});
+  return {sent:true,lead:updated,connectorResponse:result};
+}
+
+async function runSalesCampaign(campaignRow,{manual=false}={}) {
+  const campaign=salesCampaignShape(campaignRow);
+  const query=[campaign.objective,campaign.offer&&`Offer: ${campaign.offer}`,campaign.targetBuyer&&`Target buyer: ${campaign.targetBuyer}`,campaign.constraints&&`Constraints: ${campaign.constraints}`].filter(Boolean).join("\n");
+  await recordSalesEvent({campaignId:campaign.id,eventType:"run_started",detail:{manual}});
+  try {
+    const evidence=await discoverMarketEvidence(query,{count:Math.max(campaign.maxLeadsPerRun*2,10)});
+    const created=[];let qualified=0,sent=0;
+    for(const item of evidence.results.slice(0,campaign.maxLeadsPerRun)) {
+      const candidate=evidenceToLead(campaign,item);
+      let lead=await upsertSalesLead(candidate);
+      if(lead.stage==="qualified") {
+        qualified++;
+        lead=await updateSalesLead(lead.id,{stage:"outreach_ready"})||lead;
+        if(campaign.outreachMode==="auto"&&campaign.authorizedAutoOutreach&&process.env.SALES_OUTREACH_WEBHOOK_URL&&lead.outreach_status==="not_sent") {
+          try{const delivery=await sendSalesOutreach(campaign,lead);if(delivery.sent){sent++;lead=delivery.lead;}}
+          catch(error){await recordSalesEvent({campaignId:campaign.id,leadId:lead.id,eventType:"outreach_failed",detail:{error:error.message}});}
+        }
+      }
+      created.push(lead);
+    }
+    await markSalesCampaignRun(campaign.id,{ok:true});
+    const summary={evidenceFound:evidence.results.length,rejected:evidence.rejectedCount||0,processed:created.length,qualified,outreachSent:sent,discoveryProvider:evidence.provider||null};
+    await recordSalesEvent({campaignId:campaign.id,eventType:"run_completed",detail:summary});
+    return {ok:true,summary,leads:created};
+  } catch(error) {
+    await markSalesCampaignRun(campaign.id,{ok:false,error:error.message});
+    await recordSalesEvent({campaignId:campaign.id,eventType:"run_failed",detail:{error:error.message}});
+    throw error;
+  }
+}
+
+let salesForceTicking=false;
+async function salesForceTick() {
+  if(salesForceTicking||!storageEnabled()||process.env.SALES_FORCE_ENABLED==="false")return;
+  salesForceTicking=true;
+  try{const campaigns=await listDueSalesCampaigns(3);for(const campaign of campaigns){try{await runSalesCampaign(campaign);}catch(error){console.error("Oracle sales campaign failed:",campaign.id,error.message);}}}
+  catch(error){console.error("Oracle sales force tick failed:",error.message);}
+  finally{salesForceTicking=false;}
+}
+
+app.get("/api/sales/dashboard",requireAdmin,async(req,res)=>{
+  try{const campaignId=String(req.query.campaignId||"").trim()||null;const [campaigns,leads,events]=await Promise.all([listSalesCampaigns(),listSalesLeads({campaignId,limit:250}),listSalesEvents(campaignId,100)]);res.json({automationEnabled:process.env.SALES_FORCE_ENABLED!=="false",discoveryEnabled:discoveryEnabled(),outreachConnector:Boolean(process.env.SALES_OUTREACH_WEBHOOK_URL),campaigns,leads,events,summary:summarizePipeline(leads)});}
+  catch(error){res.status(500).json({error:error.message});}
+});
+app.post("/api/sales/campaigns",requireAdmin,async(req,res)=>{try{const campaign=normalizeCampaign(req.body||{});res.status(201).json({campaign:await createSalesCampaign(campaign)});}catch(error){res.status(400).json({error:error.message});}});
+app.post("/api/sales/campaigns/:id/run",requireAdmin,async(req,res)=>{try{const campaign=await getSalesCampaign(req.params.id);if(!campaign)return res.status(404).json({error:"Campaign not found."});res.json(await runSalesCampaign(campaign,{manual:true}));}catch(error){res.status(500).json({error:error.message});}});
+app.post("/api/sales/campaigns/:id/status",requireAdmin,async(req,res)=>{const status=String(req.body?.status||"");if(!["running","paused"].includes(status))return res.status(400).json({error:"Status must be running or paused."});const campaign=await updateSalesCampaignStatus(req.params.id,status);if(!campaign)return res.status(404).json({error:"Campaign not found."});res.json({campaign});});
+app.post("/api/sales/leads/:id/send",requireAdmin,async(req,res)=>{try{const lead=await getSalesLead(req.params.id);if(!lead)return res.status(404).json({error:"Lead not found."});if(!["qualified","outreach_ready"].includes(lead.stage))return res.status(409).json({error:"Lead is not ready for outreach."});const campaign=await getSalesCampaign(lead.campaign_id);res.json(await sendSalesOutreach(salesCampaignShape(campaign),lead));}catch(error){res.status(500).json({error:error.message});}});
+app.post("/api/sales/leads/:id/outcome",requireAdmin,async(req,res)=>{try{const lead=await getSalesLead(req.params.id);if(!lead)return res.status(404).json({error:"Lead not found."});const stage=nextStage(lead.stage,String(req.body?.stage||""));const updated=await updateSalesLead(lead.id,{stage,estimatedValue:req.body?.estimatedValue,estimatedMargin:req.body?.estimatedMargin,actualRevenue:req.body?.actualRevenue,actualMargin:req.body?.actualMargin,notes:String(req.body?.notes||"").slice(0,4000)});await recordSalesEvent({campaignId:lead.campaign_id,leadId:lead.id,eventType:`lead_${stage}`,detail:{actualRevenue:updated.actual_revenue,actualMargin:updated.actual_margin}});res.json({lead:updated});}catch(error){res.status(400).json({error:error.message});}});
 app.get("/api/admin/beta-requests",requireAdmin,async(_req,res)=>{res.json({requests:await listBetaRequests(100)});});
 app.post("/api/admin/beta-requests/:id/approve",requireAdmin,async(req,res)=>{const id=Number(req.params.id),quota=Math.max(1,Math.min(10000,Number(req.body?.quota||100))); if(!Number.isInteger(id)) return res.status(400).json({error:"Invalid request id."}); const secret="ora_"+crypto.randomBytes(24).toString("base64url"), apiKeyId="beta_"+id, apiKeyHash=crypto.createHash("sha256").update(secret).digest("hex"); const approved=await approveBetaRequest({id,apiKeyId,apiKeyHash,quota}); if(!approved)return res.status(404).json({error:"Pending request not found."}); setDynamicApiKeys(await findActiveBetaKeyHashes()); res.json({approved,apiKey:secret,warning:"Copy this key now. Oracle stores only its hash and cannot show it again."});});
 app.post("/api/admin/beta-requests/:id/revoke",requireAdmin,async(req,res)=>{const id=Number(req.params.id);if(!Number.isInteger(id))return res.status(400).json({error:"Invalid request id."});const revoked=await revokeBetaRequest(id);if(!revoked)return res.status(404).json({error:"Approved request not found."});setDynamicApiKeys(await findActiveBetaKeyHashes());res.json({ok:true,revoked});});
@@ -486,5 +569,5 @@ async function requirePersistentQuota(req,res,next) {
   }
 }
 app.post("/api/oracle", requireApiKey, requirePersistentQuota, oracleHandler); app.post("/v1/oracle", requireApiKey, requirePersistentQuota, oracleHandler);
-async function start() { try { const state = await initStorage(); if (state.enabled) { setDynamicApiKeys(await findActiveBetaKeyHashes()); const rows = await loadRoutePerformance(); for (const row of rows) modelPerformance.set(row.route_key, { attempts: Number(row.attempts || 0), successes: Number(row.successes || 0), failures: Number(row.failures || 0), repairs: Number(row.repairs || 0), feedbackTotal: Number(row.feedback_total || 0), feedbackCount: Number(row.feedback_count || 0), avgMs: Number(row.avg_ms || 0) }); console.log(`Oracle loaded ${rows.length} learned routes from Postgres.`); } else console.log("Oracle persistence: in-memory mode (DATABASE_URL not configured)."); } catch (error) { console.error("Oracle persistence unavailable; continuing in memory:", error.message); } app.listen(PORT, "0.0.0.0", () => { console.log(`Oracle Stack listening on 0.0.0.0:${PORT}`); if (process.env.ORACLE_BENCHMARK_ON_START === "true") { const taskIds=String(process.env.ORACLE_BENCHMARK_TASK_IDS||"").split(",").map(x=>x.trim()).filter(Boolean); const modelIds=String(process.env.ORACLE_BENCHMARK_MODEL_IDS||"").split(",").map(x=>x.trim()).filter(Boolean); console.log("ORACLE_BENCHMARK starting one-time benchmark.", JSON.stringify({taskIds:taskIds.length?taskIds:"all",modelIds:modelIds.length?modelIds:"all"})); runBenchmarkSuite({ repeats: 1, taskIds, modelIds, resume:false }).then(() => console.log("ORACLE_BENCHMARK_RESULT", JSON.stringify(benchmarkState.report?.summary || []))).catch(error => console.error("ORACLE_BENCHMARK_ERROR", error.message)); } }); }
+async function start() { try { const state = await initStorage(); if (state.enabled) { setDynamicApiKeys(await findActiveBetaKeyHashes()); const rows = await loadRoutePerformance(); for (const row of rows) modelPerformance.set(row.route_key, { attempts: Number(row.attempts || 0), successes: Number(row.successes || 0), failures: Number(row.failures || 0), repairs: Number(row.repairs || 0), feedbackTotal: Number(row.feedback_total || 0), feedbackCount: Number(row.feedback_count || 0), avgMs: Number(row.avg_ms || 0) }); console.log(`Oracle loaded ${rows.length} learned routes from Postgres.`); } else console.log("Oracle persistence: in-memory mode (DATABASE_URL not configured)."); } catch (error) { console.error("Oracle persistence unavailable; continuing in memory:", error.message); } app.listen(PORT, "0.0.0.0", () => { console.log(`Oracle Stack listening on 0.0.0.0:${PORT}`); setTimeout(()=>salesForceTick(),5000); setInterval(()=>salesForceTick(),60000).unref(); if (process.env.ORACLE_BENCHMARK_ON_START === "true") { const taskIds=String(process.env.ORACLE_BENCHMARK_TASK_IDS||"").split(",").map(x=>x.trim()).filter(Boolean); const modelIds=String(process.env.ORACLE_BENCHMARK_MODEL_IDS||"").split(",").map(x=>x.trim()).filter(Boolean); console.log("ORACLE_BENCHMARK starting one-time benchmark.", JSON.stringify({taskIds:taskIds.length?taskIds:"all",modelIds:modelIds.length?modelIds:"all"})); runBenchmarkSuite({ repeats: 1, taskIds, modelIds, resume:false }).then(() => console.log("ORACLE_BENCHMARK_RESULT", JSON.stringify(benchmarkState.report?.summary || []))).catch(error => console.error("ORACLE_BENCHMARK_ERROR", error.message)); } }); }
 start();

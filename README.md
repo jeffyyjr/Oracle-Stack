@@ -1,6 +1,20 @@
 # Oracle Stack
 
-Oracle Stack is an adaptive AI execution layer. A user or application sends one request; Oracle identifies the task and depth, chooses a specialist and execution model, runs the work, QA-checks it, repairs material failures, and learns from the outcome.
+Oracle Stack is an autonomous sales-force and opportunity-execution system. It finds current buyer demand, qualifies opportunities, prepares or sends authorized outreach, tracks deals and revenue, and learns which workflows convert. Its adaptive model router is the internal brain that selects specialists/models, checks work, repairs failures and learns from outcomes.
+
+## Autonomous sales force
+
+Open `/sales.html` with `ORACLE_ADMIN_TOKEN` to launch and manage persistent campaigns.
+
+Each campaign has a mission, optional offer and target buyer, lead threshold, run cadence, daily-run cap and outreach mode. The background loop:
+
+1. Searches configured live-discovery sources for current demand.
+2. Rejects weak/closed signals and scores evidence.
+3. Stores qualified leads and tailored outreach drafts.
+4. Sends outreach only when the campaign explicitly authorizes auto-outreach and `SALES_OUTREACH_WEBHOOK_URL` is configured.
+5. Tracks contacted, replied, proposal, won and lost stages plus actual revenue and margin.
+
+Campaigns can be paused globally with `SALES_FORCE_ENABLED=false` or individually from the dashboard. Payments, purchases and contracts are never executed by the campaign loop.
 
 ## V2 flow
 
@@ -107,6 +121,6 @@ Set `ORACLE_BENCHMARK_URL` to benchmark a deployed instance instead of localhost
 
 ## Product direction
 
-Oracle Stack is not intended to be another model picker or prompt enhancer. The target is a single execution API that chooses the model, specialist, and reasoning depth that fit a task, survives provider/model failures, checks the result, learns from outcomes, and improves routing over time.
+Oracle Stack is not another model picker or prompt enhancer. The product is the automatic sales force: Oracle is the brain, and Opportunity Finder, qualification, Buyer Matcher, outreach and Deal Orchestrator are the workforce. Model routing remains supporting infrastructure.
 
-Next infrastructure milestones: durable quota/billing state, benchmark-driven routing weights, stronger mixed-model cost accounting, and customer-facing API key management.
+Next milestones: connect approved outreach channels, ingest reply events, automate proposal drafting/handoffs, and train campaign prioritization on real conversion, revenue and margin outcomes.

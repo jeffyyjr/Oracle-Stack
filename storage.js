@@ -69,6 +69,39 @@ export async function initStorage() {
     CREATE INDEX IF NOT EXISTS oracle_artifact_runs_workspace_idx ON oracle_artifact_runs(workspace_id, id);
     ALTER TABLE oracle_artifacts ADD COLUMN IF NOT EXISTS parent_workspace_id TEXT;
     CREATE INDEX IF NOT EXISTS oracle_artifacts_parent_idx ON oracle_artifacts(parent_workspace_id);
+
+    CREATE TABLE IF NOT EXISTS oracle_sales_campaigns (
+      id UUID PRIMARY KEY, name TEXT NOT NULL, objective TEXT NOT NULL, offer TEXT NOT NULL DEFAULT '',
+      target_buyer TEXT NOT NULL DEFAULT '', constraints_text TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'running', outreach_mode TEXT NOT NULL DEFAULT 'draft',
+      authorized_auto_outreach BOOLEAN NOT NULL DEFAULT FALSE,
+      cadence_minutes INTEGER NOT NULL DEFAULT 1440, daily_run_limit INTEGER NOT NULL DEFAULT 1,
+      minimum_lead_score INTEGER NOT NULL DEFAULT 55, max_leads_per_run INTEGER NOT NULL DEFAULT 8,
+      runs_today INTEGER NOT NULL DEFAULT 0, runs_date DATE NOT NULL DEFAULT CURRENT_DATE,
+      next_run_at TIMESTAMPTZ, last_run_at TIMESTAMPTZ, last_error TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS oracle_sales_campaigns_due_idx ON oracle_sales_campaigns(status,next_run_at);
+    CREATE TABLE IF NOT EXISTS oracle_sales_leads (
+      id UUID PRIMARY KEY, campaign_id UUID NOT NULL REFERENCES oracle_sales_campaigns(id) ON DELETE CASCADE,
+      name TEXT NOT NULL, source TEXT, source_url TEXT NOT NULL, buyer_problem TEXT,
+      evidence JSONB NOT NULL DEFAULT '{}'::jsonb, score INTEGER NOT NULL DEFAULT 0,
+      stage TEXT NOT NULL DEFAULT 'discovered', outreach_draft TEXT NOT NULL DEFAULT '',
+      outreach_status TEXT NOT NULL DEFAULT 'not_sent', external_message_id TEXT,
+      estimated_value DOUBLE PRECISION, estimated_margin DOUBLE PRECISION,
+      actual_revenue DOUBLE PRECISION, actual_margin DOUBLE PRECISION, notes TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(campaign_id,source_url)
+    );
+    CREATE INDEX IF NOT EXISTS oracle_sales_leads_campaign_idx ON oracle_sales_leads(campaign_id,created_at DESC);
+    CREATE INDEX IF NOT EXISTS oracle_sales_leads_stage_idx ON oracle_sales_leads(stage,updated_at DESC);
+    CREATE TABLE IF NOT EXISTS oracle_sales_events (
+      id BIGSERIAL PRIMARY KEY, campaign_id UUID REFERENCES oracle_sales_campaigns(id) ON DELETE CASCADE,
+      lead_id UUID REFERENCES oracle_sales_leads(id) ON DELETE CASCADE,
+      event_type TEXT NOT NULL, detail JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS oracle_sales_events_campaign_idx ON oracle_sales_events(campaign_id,created_at DESC);
   `);
   enabled = true;
   return { enabled: true };
@@ -240,4 +273,120 @@ export async function revokeBetaRequest(id) {
   if(!enabled) throw new Error("Beta storage unavailable.");
   const result=await pool.query("UPDATE oracle_beta_requests SET status='revoked' WHERE id=$1 AND status='approved' RETURNING id,email,status,api_key_id,quota",[id]);
   return result.rows[0]||null;
+}
+
+export async function createSalesCampaign(campaign) {
+  if (!enabled) throw new Error("Sales force storage requires DATABASE_URL.");
+  const result=await pool.query(`
+    INSERT INTO oracle_sales_campaigns
+      (id,name,objective,offer,target_buyer,constraints_text,status,outreach_mode,authorized_auto_outreach,cadence_minutes,daily_run_limit,minimum_lead_score,max_leads_per_run,next_run_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW()) RETURNING *
+  `,[campaign.id,campaign.name,campaign.objective,campaign.offer,campaign.targetBuyer,campaign.constraints,campaign.status,campaign.outreachMode,campaign.authorizedAutoOutreach,campaign.cadenceMinutes,campaign.dailyRunLimit,campaign.minimumLeadScore,campaign.maxLeadsPerRun]);
+  await recordSalesEvent({campaignId:campaign.id,eventType:"campaign_created",detail:{outreachMode:campaign.outreachMode}});
+  return result.rows[0];
+}
+
+export async function listSalesCampaigns() {
+  if (!enabled) return [];
+  const result=await pool.query(`
+    SELECT c.*,
+      COUNT(l.id)::int AS lead_count,
+      COUNT(l.id) FILTER (WHERE l.stage IN ('qualified','outreach_ready','contacted','replied','proposal'))::int AS active_leads,
+      COUNT(l.id) FILTER (WHERE l.stage='won')::int AS won_count,
+      COALESCE(SUM(l.actual_revenue) FILTER (WHERE l.stage='won'),0)::double precision AS won_revenue,
+      COALESCE(SUM(l.actual_margin) FILTER (WHERE l.stage='won'),0)::double precision AS won_margin
+    FROM oracle_sales_campaigns c LEFT JOIN oracle_sales_leads l ON l.campaign_id=c.id
+    GROUP BY c.id ORDER BY c.created_at DESC
+  `);
+  return result.rows;
+}
+
+export async function getSalesCampaign(id) {
+  if (!enabled) return null;
+  const result=await pool.query("SELECT * FROM oracle_sales_campaigns WHERE id=$1",[id]);
+  return result.rows[0]||null;
+}
+
+export async function updateSalesCampaignStatus(id,status) {
+  if (!enabled) throw new Error("Sales force storage is unavailable.");
+  const result=await pool.query("UPDATE oracle_sales_campaigns SET status=$2,next_run_at=CASE WHEN $2='running' THEN NOW() ELSE next_run_at END,updated_at=NOW() WHERE id=$1 RETURNING *",[id,status]);
+  if(result.rows[0])await recordSalesEvent({campaignId:id,eventType:`campaign_${status}`,detail:{}});
+  return result.rows[0]||null;
+}
+
+export async function listDueSalesCampaigns(limit=5) {
+  if (!enabled) return [];
+  const result=await pool.query(`
+    UPDATE oracle_sales_campaigns SET runs_today=0,runs_date=CURRENT_DATE
+    WHERE runs_date < CURRENT_DATE RETURNING id
+  `);
+  void result;
+  const due=await pool.query(`SELECT * FROM oracle_sales_campaigns
+    WHERE status='running' AND runs_today < daily_run_limit AND (next_run_at IS NULL OR next_run_at<=NOW())
+    ORDER BY COALESCE(next_run_at,created_at) LIMIT $1`,[Math.max(1,Math.min(20,Number(limit)||5))]);
+  return due.rows;
+}
+
+export async function markSalesCampaignRun(id,{ok,error=null}={}) {
+  if (!enabled) return null;
+  const result=await pool.query(`UPDATE oracle_sales_campaigns SET
+    runs_today=runs_today+1,last_run_at=NOW(),next_run_at=NOW()+(cadence_minutes||' minutes')::interval,
+    last_error=$2,updated_at=NOW() WHERE id=$1 RETURNING *`,[id,ok?null:String(error||"Unknown run error").slice(0,2000)]);
+  return result.rows[0]||null;
+}
+
+export async function upsertSalesLead(lead) {
+  if (!enabled) throw new Error("Sales force storage is unavailable.");
+  const result=await pool.query(`
+    INSERT INTO oracle_sales_leads
+      (id,campaign_id,name,source,source_url,buyer_problem,evidence,score,stage,outreach_draft,estimated_value,estimated_margin)
+    VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12)
+    ON CONFLICT (campaign_id,source_url) DO UPDATE SET
+      name=EXCLUDED.name,buyer_problem=EXCLUDED.buyer_problem,evidence=EXCLUDED.evidence,
+      score=GREATEST(oracle_sales_leads.score,EXCLUDED.score),
+      outreach_draft=CASE WHEN oracle_sales_leads.outreach_status='not_sent' THEN EXCLUDED.outreach_draft ELSE oracle_sales_leads.outreach_draft END,
+      updated_at=NOW()
+    RETURNING *
+  `,[lead.id,lead.campaignId,lead.name,lead.source,lead.sourceUrl,lead.buyerProblem,JSON.stringify(lead.evidence),lead.score,lead.stage,lead.outreachDraft,lead.estimatedValue,lead.estimatedMargin]);
+  return result.rows[0];
+}
+
+export async function listSalesLeads({campaignId=null,limit=200}={}) {
+  if (!enabled) return [];
+  const n=Math.max(1,Math.min(500,Number(limit)||200));
+  const result=campaignId
+    ? await pool.query("SELECT * FROM oracle_sales_leads WHERE campaign_id=$1 ORDER BY score DESC,created_at DESC LIMIT $2",[campaignId,n])
+    : await pool.query("SELECT * FROM oracle_sales_leads ORDER BY updated_at DESC LIMIT $1",[n]);
+  return result.rows;
+}
+
+export async function getSalesLead(id) {
+  if (!enabled) return null;
+  const result=await pool.query("SELECT * FROM oracle_sales_leads WHERE id=$1",[id]);
+  return result.rows[0]||null;
+}
+
+export async function updateSalesLead(id,patch={}) {
+  if (!enabled) throw new Error("Sales force storage is unavailable.");
+  const result=await pool.query(`UPDATE oracle_sales_leads SET
+    stage=COALESCE($2,stage),outreach_status=COALESCE($3,outreach_status),external_message_id=COALESCE($4,external_message_id),
+    estimated_value=COALESCE($5,estimated_value),estimated_margin=COALESCE($6,estimated_margin),
+    actual_revenue=COALESCE($7,actual_revenue),actual_margin=COALESCE($8,actual_margin),notes=COALESCE($9,notes),updated_at=NOW()
+    WHERE id=$1 RETURNING *`,[id,patch.stage||null,patch.outreachStatus||null,patch.externalMessageId||null,patch.estimatedValue??null,patch.estimatedMargin??null,patch.actualRevenue??null,patch.actualMargin??null,patch.notes??null]);
+  return result.rows[0]||null;
+}
+
+export async function recordSalesEvent({campaignId=null,leadId=null,eventType,detail={}}) {
+  if (!enabled) return null;
+  const result=await pool.query("INSERT INTO oracle_sales_events (campaign_id,lead_id,event_type,detail) VALUES ($1,$2,$3,$4::jsonb) RETURNING *",[campaignId,leadId,eventType,JSON.stringify(detail)]);
+  return result.rows[0];
+}
+
+export async function listSalesEvents(campaignId=null,limit=100) {
+  if (!enabled) return [];
+  const n=Math.max(1,Math.min(500,Number(limit)||100));
+  const result=campaignId
+    ? await pool.query("SELECT * FROM oracle_sales_events WHERE campaign_id=$1 ORDER BY created_at DESC LIMIT $2",[campaignId,n])
+    : await pool.query("SELECT * FROM oracle_sales_events ORDER BY created_at DESC LIMIT $1",[n]);
+  return result.rows;
 }
