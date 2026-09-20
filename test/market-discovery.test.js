@@ -1,0 +1,41 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {
+  broadOpportunityIntent,
+  buildDiscoveryQuerySpecs,
+  classifyDemandEvidence
+} from "../market-discovery.js";
+
+test("broad inventory-free request uses buyer radar", () => {
+  const request = "Find me something legitimate I can sell without holding inventory, validate the demand, and figure out who would buy it.";
+  assert.equal(broadOpportunityIntent(request), true);
+  const plan = buildDiscoveryQuerySpecs(request);
+  assert.equal(plan.strategy, "broad_inventory_free_buyer_radar");
+  assert.ok(plan.specs.length >= 5);
+  assert.ok(plan.specs.every(x => x.signalType === "demand"));
+  assert.ok(plan.specs.every(x => ["upwork", "freelancer", "peopleperhour"].includes(x.channel)));
+});
+
+test("generic article evidence cannot qualify buyer demand", () => {
+  assert.equal(classifyDemandEvidence({
+    channel: "web_demand",
+    signalType: "demand",
+    verification: { status: "VERIFIED_OPEN" }
+  }), "CONTEXT_ONLY");
+});
+
+test("verified direct listing qualifies", () => {
+  assert.equal(classifyDemandEvidence({
+    channel: "upwork",
+    signalType: "demand",
+    verification: { status: "VERIFIED_OPEN" }
+  }), "QUALIFIED");
+});
+
+test("unverified direct listing remains verify-only", () => {
+  assert.equal(classifyDemandEvidence({
+    channel: "freelancer",
+    signalType: "demand",
+    verification: { status: "INACCESSIBLE" }
+  }), "VERIFY");
+});
