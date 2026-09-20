@@ -20,6 +20,19 @@
       <p class="subhead">Tell Oracle what you want to sell—or let it hunt for a legitimate opportunity. It finds demand, qualifies buyers, prepares outreach, tracks deals and learns from revenue outcomes. The model router is the brain underneath, not the product.</p>
     </section>
 
+    <section class="card" style="padding:18px;margin-bottom:18px">
+      <details>
+        <summary><strong>Oracle access</strong> · <span id="oracle-key-state">Checking…</span></summary>
+        <p style="margin-top:14px">Beta access keys stay in this browser only and are sent to Oracle with each request. They are never provider API keys.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <input id="oracle-key" type="password" autocomplete="off" placeholder="ora_…" style="flex:1;min-width:220px;padding:12px" />
+          <button id="save-oracle-key" class="ghost-btn" type="button">Save key</button>
+          <button id="clear-oracle-key" class="ghost-btn" type="button">Clear</button>
+          <a class="ghost-btn" href="/developers.html">Get beta key</a>
+        </div>
+      </details>
+    </section>
+
     <section class="chat card" aria-label="Oracle conversation">
       <div id="messages" class="messages" aria-live="polite">
         <div class="message oracle-message">
