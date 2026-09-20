@@ -5,7 +5,7 @@ const { Pool } = pg;
 let pool = null;
 let enabled = false;
 
-function safeJson(value) { return JSON.stringify(value).replaceAll(String.fromCharCode(0), ""); }
+function safeJson(value) { return JSON.stringify(value).replaceAll(String.fromCharCode(0), "").replace(/\\u0000/gi, ""); }
 
 export function storageEnabled() { return enabled; }
 
