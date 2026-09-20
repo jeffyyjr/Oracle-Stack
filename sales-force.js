@@ -97,6 +97,27 @@ export function normalizeDeliveryReceipt(result = {}) {
   return { accepted: true, messageId, status: status || "accepted" };
 }
 
+export function classifyInboundReply(input = {}) {
+  const body = text(input.text || input.body || input.message, 8000);
+  const providerMessageId = text(input.messageId || input.id, 240);
+  const inReplyTo = text(input.inReplyTo || input.replyToMessageId, 240);
+  if (!body || !providerMessageId || !inReplyTo) {
+    return { accepted: false, classification: "unverified", action: "hold", reason: "missing_reply_evidence" };
+  }
+
+  const normalized = body.toLowerCase();
+  if (/\b(unsubscribe|remove me|stop emailing|do not (email|contact)|don't (email|contact)|no more emails|opt[ -]?out)\b/i.test(normalized)) {
+    return { accepted: true, classification: "opt_out", action: "suppress", stage: "lost", providerMessageId, inReplyTo };
+  }
+  if (/\b(not interested|no thanks|no thank you|already handled|filled the role|found someone|went with someone else)\b/i.test(normalized)) {
+    return { accepted: true, classification: "negative", action: "close", stage: "lost", providerMessageId, inReplyTo };
+  }
+  if (/\b(interested|tell me more|send (me )?(a )?(quote|proposal|plan)|what (would|will) (it|this) cost|how much|availability|when can you start|schedule|book|call|meeting)\b/i.test(normalized)) {
+    return { accepted: true, classification: "positive", action: "advance", stage: "replied", providerMessageId, inReplyTo };
+  }
+  return { accepted: true, classification: "needs_review", action: "hold", stage: "replied", providerMessageId, inReplyTo };
+}
+
 export function nextStage(current, requested) {
   if (!SALES_STAGES.includes(current) || !SALES_STAGES.includes(requested)) throw new Error("Invalid sales stage.");
   if (CLOSED.has(current) && current !== requested) throw new Error("Closed deals cannot be reopened automatically.");
