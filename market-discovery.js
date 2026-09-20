@@ -151,8 +151,7 @@ function decodeHtmlText(value = "") {
 }
 
 function extractBusinessName(html = "", seedTitle = "", hostname = "") {
-  const raw=String(html);
-  const candidates=[];
+  const raw=String(html), candidates=[];
   const siteName=raw.match(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']/i)
     || raw.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:site_name["']/i);
   if(siteName?.[1]) candidates.push(decodeHtmlText(siteName[1]));
@@ -166,13 +165,26 @@ function extractBusinessName(html = "", seedTitle = "", hostname = "") {
   }
   candidates.push(decodeHtmlText(seedTitle));
 
-  const generic=/^(contact(?: us)?|schedule(?: service)?|book(?: service| now)?|free estimates?|request (?:service|a quote|an estimate)|home|services?|hvac services?|plumbing services?|roofing services?)$/i;
-  const noisy=/\b(official site|contact page|schedule online|free estimate)\b/i;
-  for(const candidate of candidates) {
+  const generic=/^(contact(?: us)?|schedule(?: service)?|book(?: service| now)?|free (?:hvac )?estimates?|request (?:service|a quote|an estimate)|home|services?|hvac services?|plumbing services?|roofing services?|commercial & residential roofing services)$/i;
+  const hostLabel=baseHost(hostname).split(".")[0].replace(/[^a-z0-9]/gi,"").toLowerCase();
+  const scoreCandidate=(candidate)=>{
     const c=cleanText(candidate).replace(/^[-|:]+|[-|:]+$/g,"").trim();
-    if(c.length<2||c.length>90||generic.test(c)||noisy.test(c)) continue;
-    if(/[a-z]/i.test(c)) return c;
-  }
+    if(c.length<2||c.length>90||generic.test(c)) return null;
+    const norm=c.replace(/[^a-z0-9]/gi,"").toLowerCase();
+    const words=c.match(/[A-Za-z0-9]+/g)||[];
+    const acronym=words.map(w=>w[0]).join("").toLowerCase();
+    let score=0;
+    if(hostLabel.length>=4 && (norm.includes(hostLabel)||hostLabel.includes(norm))) score+=120;
+    if(hostLabel.length>=2 && acronym===hostLabel) score+=110;
+    if(/roof|plumb|hvac|heat|cool|electric|landscap|residential|service/i.test(c)) score+=15;
+    if(/^(contact|free|schedule|commercial|residential|las vegas|central florida)/i.test(c)) score-=25;
+    if(siteName?.[1] && c===decodeHtmlText(siteName[1])) score+=30;
+    return {c,score};
+  };
+  const ranked=candidates.map(scoreCandidate).filter(Boolean).sort((a,b)=>b.score-a.score);
+  if(ranked.length && ranked[0].score>0) return ranked[0].c;
+  const fallback=ranked.find(x=>/[a-z]/i.test(x.c));
+  if(fallback) return fallback.c;
   const label=baseHost(hostname).split(".")[0]||"Business";
   return label.split(/[-_]+/).filter(Boolean).map(x=>x.charAt(0).toUpperCase()+x.slice(1)).join(" ");
 }
