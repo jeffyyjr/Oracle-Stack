@@ -48,6 +48,10 @@ export function resendConfigurationStatus() {
 
 export async function sendResendOutreach({ lead, message }) {
   if (!resendOutreachConfigured()) throw new Error("Resend outreach is not fully configured.");
+  const channel = String(lead?.evidence?.channel || "").trim().toLowerCase();
+  if (!["public_rfp", "direct_email"].includes(channel)) {
+    return { accepted: false, status: "held", reason: "channel_requires_platform_native_outreach" };
+  }
   const to = validEmail(lead?.buyer_email || lead?.buyerEmail);
   if (!to) return { accepted: false, status: "held", reason: "verified_buyer_email_required" };
 
