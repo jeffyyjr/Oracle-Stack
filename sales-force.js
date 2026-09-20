@@ -71,6 +71,24 @@ export function normalizeCampaign(input = {}) {
   };
 }
 
+const RELEVANCE_STOP = new Set(["the","and","for","with","that","this","from","your","their","real","currently","asking","help","business","businesses","service","services","similar","home","sales","automation","using","into","through","about","only","open","buyer","target","offer"]);
+
+function relevanceTerms(value = "") {
+  return [...new Set(String(value).toLowerCase().replace(/[^a-z0-9+#.-]+/g," ").split(/\s+/).filter(x => x.length >= 4 && !RELEVANCE_STOP.has(x)))];
+}
+
+export function campaignEvidenceRelevant(campaign = {}, item = {}) {
+  const hay = new Set(relevanceTerms(`${item.title || ""} ${item.snippet || ""}`));
+  const buyerTerms = relevanceTerms(campaign.targetBuyer || campaign.target_buyer || "");
+  const problemTerms = relevanceTerms(`${campaign.offer || ""} ${campaign.objective || ""}`);
+  const buyerMatches = buyerTerms.filter(x => hay.has(x)).length;
+  const problemMatches = problemTerms.filter(x => hay.has(x)).length;
+  if (!buyerTerms.length && !problemTerms.length) return true;
+  if (buyerMatches >= 1) return true;
+  if (problemMatches >= 2) return true;
+  return false;
+}
+
 function explicitCommercialIntent(item) {
   const haystack = `${item.title || ""} ${item.snippet || ""}`.toLowerCase();
   return /(hiring|looking for|need (a|an|someone|help)|seeking|request for (proposal|quote)|rfp|budget|fixed.price|hourly|will pay|bounty|paid)/.test(haystack);

@@ -13,7 +13,7 @@ import { techHunterInstructions } from "./agents/tech-problem-hunter.js";
 import { techFixerInstructions } from "./agents/tech-fixer.js";
 import { dealQualifierInstructions } from "./agents/deal-qualifier.js";
 import { executionAgentInstructions } from "./agents/execution-agent.js";
-import { normalizeCampaign, evidenceToLead, nextStage, summarizePipeline } from "./sales-force.js";
+import { normalizeCampaign, evidenceToLead, campaignEvidenceRelevant, nextStage, summarizePipeline } from "./sales-force.js";
 import { resendOutreachConfigured, resendConfigurationStatus, sendResendOutreach } from "./resend-connector.js";
 import { gmailOutreachConfigured, gmailConfigurationStatus, sendGmailOutreach, pollGmailReplies, verifyGmailConnection } from "./gmail-connector.js";
 import { gmailBridgeConfigured, gmailBridgeStatus, sendGmailBridgeOutreach, verifyGmailBridgeConnection } from "./gmail-https-bridge.js";
@@ -433,7 +433,12 @@ async function runSalesCampaign(campaignRow,{manual=false}={}) {
   try {
     const evidence=await discoverMarketEvidence(query,{count:Math.max(campaign.maxLeadsPerRun*2,10)});
     const created=[];let qualified=0,sent=0;
-    for(const item of evidence.results.slice(0,campaign.maxLeadsPerRun)) {
+    for(const item of evidence.results) {
+      if (created.length >= campaign.maxLeadsPerRun) break;
+      if (!campaignEvidenceRelevant(campaign,item)) {
+        await recordSalesEvent({campaignId:campaign.id,eventType:"lead_rejected_irrelevant",detail:{title:item.title||"",url:item.url||"",channel:item.channel||null}});
+        continue;
+      }
       const candidate=evidenceToLead(campaign,item);
       let lead=await upsertSalesLead(candidate);
       if(lead.stage==="qualified") {
