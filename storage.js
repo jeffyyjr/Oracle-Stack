@@ -381,7 +381,22 @@ export async function listSalesLeads({campaignId=null,limit=200}={}) {
   const n=Math.max(1,Math.min(500,Number(limit)||200));
   const result=campaignId
     ? await pool.query("SELECT * FROM oracle_sales_leads WHERE campaign_id=$1 ORDER BY score DESC,created_at DESC LIMIT $2",[campaignId,n])
-    : await pool.query("SELECT * FROM oracle_sales_leads ORDER BY updated_at DESC LIMIT $1",[n]);
+    : await pool.query(`SELECT * FROM oracle_sales_leads
+        ORDER BY
+          CASE stage
+            WHEN 'contacted' THEN 1
+            WHEN 'replied' THEN 2
+            WHEN 'proposal' THEN 3
+            WHEN 'outreach_ready' THEN 4
+            WHEN 'qualified' THEN 5
+            WHEN 'discovered' THEN 6
+            WHEN 'won' THEN 7
+            WHEN 'lost' THEN 8
+            ELSE 9
+          END,
+          score DESC,
+          updated_at DESC
+        LIMIT $1`,[n]);
   return result.rows;
 }
 
