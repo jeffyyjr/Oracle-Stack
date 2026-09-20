@@ -106,3 +106,30 @@ test("prospect without a public business email cannot qualify", () => {
   assert.equal(campaignEvidenceQualifies(campaign,item), false);
   assert.equal(evidenceToLead(campaign,item).stage,"discovered");
 });
+
+
+test("verified marketplace buyer becomes a platform-native proposal", () => {
+  const campaign = normalizeCampaign({
+    objective:"Find active buyers for home-service lead automation",
+    offer:"AI lead-response and appointment-booking automation",
+    targetBuyer:"home-service HVAC plumbing roofing electrical businesses",
+    minimumLeadScore:70
+  });
+  const item = {
+    channel:"upwork",
+    signalType:"demand",
+    qualification:"QUALIFIED",
+    title:"AI sales agent MVP for home-service businesses",
+    snippet:"We are hiring an AI developer for HVAC and plumbing lead qualification, follow-up, CRM automation and appointment booking. $50-$120 hourly.",
+    url:"https://www.upwork.com/freelance-jobs/apply/example",
+    verification:{status:"VERIFIED_OPEN"}
+  };
+  assert.equal(campaignEvidenceQualifies(campaign,item), true);
+  const lead=evidenceToLead(campaign,item);
+  assert.equal(lead.stage,"qualified");
+  assert.equal(lead.evidence.outreachMethod,"platform_native");
+  assert.equal(lead.evidence.platform,"Upwork");
+  assert.equal(lead.buyerEmail,null);
+  assert.match(lead.outreachDraft,/working/i);
+  assert.match(lead.outreachDraft,/lead intake/i);
+});
