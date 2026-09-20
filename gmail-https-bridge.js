@@ -10,8 +10,16 @@ function validEmail(value) {
 }
 
 function eligibleChannel(lead = {}) {
-  const channel = String(lead?.evidence?.channel || "").trim().toLowerCase();
-  return ["public_rfp", "direct_email"].includes(channel);
+  const evidence=lead?.evidence || {};
+  const channel=String(evidence.channel || "").trim().toLowerCase();
+  if (["public_rfp","direct_email"].includes(channel)) return true;
+  if (channel !== "business_web") return false;
+  const role=String(evidence.buyerEmailRole || "").toLowerCase();
+  const allowedRoles=new Set(["servicerequest","service","appointments","appointment","booking","estimates","estimate","quotes","quote","clientcare","customerservice","office","contact","hello","support","info","sales"]);
+  return evidence.signalType==="prospect" &&
+    evidence.qualification==="PROSPECT_QUALIFIED" &&
+    evidence.verification?.status==="VERIFIED_OPEN" &&
+    allowedRoles.has(role);
 }
 
 async function fetchJson(url, options = {}, timeoutMs = 15000) {
@@ -59,7 +67,7 @@ export async function sendGmailBridgeOutreach({ lead, message }) {
     secret: env("GMAIL_BRIDGE_SECRET"),
     oracleLeadId: lead.id,
     to,
-    subject: String(lead?.name || "Following up on your request").replace(/[\r\n]+/g, " ").slice(0,160),
+    subject: String(lead?.evidence?.signalType==="prospect" ? `Quick idea for ${lead?.name || "your service team"}` : (lead?.name || "Following up on your request")).replace(/[\r\n]+/g, " ").slice(0,160),
     text: `${String(message || "").trim()}\n\n— ${env("SALES_SENDER_BUSINESS_NAME")}\n${env("SALES_SENDER_POSTAL_ADDRESS")}\nIf you do not want further messages, reply "unsubscribe".`
   };
   const result = await fetchJson(env("GMAIL_BRIDGE_URL"), {

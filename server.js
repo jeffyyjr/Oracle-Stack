@@ -468,6 +468,75 @@ async function sendSalesOutreach(campaign,lead) {
   return {sent:true,lead:updated,connectorResponse:result};
 }
 
+async function runControlledProspectEmailTest() {
+  if (String(process.env.SALES_CONTROLLED_TEST_SEND||"false").toLowerCase()!=="true") return;
+  if (!storageEnabled() || !gmailBridgeConfigured()) {
+    console.log("CONTROLLED_PROSPECT_EMAIL_TEST",JSON.stringify({ok:false,reason:"storage_or_gmail_bridge_unavailable"}));
+    return;
+  }
+
+  const targetEmail=String(process.env.SALES_CONTROLLED_TEST_EMAIL||"").trim().toLowerCase();
+  if (!targetEmail) {
+    console.log("CONTROLLED_PROSPECT_EMAIL_TEST",JSON.stringify({ok:false,reason:"target_email_missing"}));
+    return;
+  }
+
+  const campaigns=await listSalesCampaigns();
+  const campaignRow=campaigns.find(c=>/home service ai pilot/i.test(String(c.name||"")))
+    || campaigns.find(c=>/(home[- ]service|lead response|appointment booking|missed calls)/i.test(String(c.objective||"")+" "+String(c.target_buyer||"")));
+  if(!campaignRow) {
+    console.log("CONTROLLED_PROSPECT_EMAIL_TEST",JSON.stringify({ok:false,reason:"campaign_not_found"}));
+    return;
+  }
+  const campaign=salesCampaignShape(campaignRow);
+  const events=await listSalesEvents(campaign.id,100);
+  if(events.some(e=>["controlled_test_outreach_v1_started","controlled_test_outreach_v1_sent"].includes(e.event_type))) {
+    console.log("CONTROLLED_PROSPECT_EMAIL_TEST",JSON.stringify({ok:true,skipped:true,reason:"persistent_guard_exists"}));
+    return;
+  }
+
+  const leads=await listSalesLeads({campaignId:campaign.id,limit:250});
+  const lead=leads.find(l=>
+    String(l.buyer_email||"").toLowerCase()===targetEmail &&
+    ["qualified","outreach_ready"].includes(l.stage) &&
+    l.outreach_status==="not_sent" &&
+    l.evidence?.channel==="business_web" &&
+    l.evidence?.signalType==="prospect" &&
+    l.evidence?.qualification==="PROSPECT_QUALIFIED" &&
+    l.evidence?.verification?.status==="VERIFIED_OPEN" &&
+    Boolean(l.evidence?.buyerEmailRole)
+  );
+  if(!lead) {
+    console.log("CONTROLLED_PROSPECT_EMAIL_TEST",JSON.stringify({ok:false,reason:"verified_target_lead_not_ready",targetEmail}));
+    return;
+  }
+
+  await recordSalesEvent({
+    campaignId:campaign.id,
+    leadId:lead.id,
+    eventType:"controlled_test_outreach_v1_started",
+    detail:{targetEmail,name:lead.name,role:lead.evidence?.buyerEmailRole||null}
+  });
+  try {
+    const delivery=await sendSalesOutreach(campaign,lead);
+    if(!delivery.sent) {
+      await recordSalesEvent({campaignId:campaign.id,leadId:lead.id,eventType:"controlled_test_outreach_v1_held",detail:{reason:delivery.reason||"not_sent"}});
+      console.log("CONTROLLED_PROSPECT_EMAIL_TEST",JSON.stringify({ok:false,held:true,reason:delivery.reason||"not_sent",name:lead.name,targetEmail}));
+      return;
+    }
+    await recordSalesEvent({
+      campaignId:campaign.id,
+      leadId:lead.id,
+      eventType:"controlled_test_outreach_v1_sent",
+      detail:{targetEmail,name:lead.name,role:lead.evidence?.buyerEmailRole||null,messageId:delivery.connectorResponse?.messageId||delivery.lead?.external_message_id||null}
+    });
+    console.log("CONTROLLED_PROSPECT_EMAIL_TEST",JSON.stringify({ok:true,sent:true,name:lead.name,targetEmail,role:lead.evidence?.buyerEmailRole||null}));
+  } catch(error) {
+    await recordSalesEvent({campaignId:campaign.id,leadId:lead.id,eventType:"controlled_test_outreach_v1_failed",detail:{error:error.message}});
+    console.error("CONTROLLED_PROSPECT_EMAIL_TEST_FAILED",error.message);
+  }
+}
+
 async function runSalesCampaign(campaignRow,{manual=false}={}) {
   const campaign=salesCampaignShape(campaignRow);
   const query=[campaign.objective,campaign.offer&&`Offer: ${campaign.offer}`,campaign.targetBuyer&&`Target buyer: ${campaign.targetBuyer}`,campaign.constraints&&`Constraints: ${campaign.constraints}`].filter(Boolean).join("\n");
@@ -672,5 +741,8 @@ async function requirePersistentQuota(req,res,next) {
   }
 }
 app.post("/api/oracle", requireApiKey, requirePersistentQuota, oracleHandler); app.post("/v1/oracle", requireApiKey, requirePersistentQuota, oracleHandler);
-async function start() { try { const state = await initStorage(); if (state.enabled) { setDynamicApiKeys(await findActiveBetaKeyHashes()); const rows = await loadRoutePerformance(); for (const row of rows) modelPerformance.set(row.route_key, { attempts: Number(row.attempts || 0), successes: Number(row.successes || 0), failures: Number(row.failures || 0), repairs: Number(row.repairs || 0), feedbackTotal: Number(row.feedback_total || 0), feedbackCount: Number(row.feedback_count || 0), avgMs: Number(row.avg_ms || 0) }); console.log(`Oracle loaded ${rows.length} learned routes from Postgres.`); await cleanupIrrelevantUncontactedLeads(); } else console.log("Oracle persistence: in-memory mode (DATABASE_URL not configured)."); } catch (error) { console.error("Oracle persistence unavailable; continuing in memory:", error.message); } app.listen(PORT, "0.0.0.0", () => { console.log(`Oracle Stack listening on 0.0.0.0:${PORT}`); setTimeout(()=>verifyGmailBridgeConnection().then(result=>console.log("GMAIL_BRIDGE_CONNECTION_TEST",JSON.stringify(result))).catch(error=>console.error("GMAIL_BRIDGE_CONNECTION_TEST_FAILED",error.message)),4000); setTimeout(()=>salesForceTick(),5000); setInterval(()=>salesForceTick(),60000).unref(); if (String(process.env.SALES_PROSPECTING_BOOTSTRAP_ON_START||"false").toLowerCase()==="true") { setTimeout(async()=>{ try { const campaigns=await listSalesCampaigns(); const target=campaigns.find(c=>/home service ai pilot/i.test(String(c.name||""))&&c.target_price!=null) || campaigns.find(c=>/(home[- ]service|lead response|appointment booking|missed calls)/i.test(String(c.objective||"")+" "+String(c.target_buyer||""))); if(!target){console.log("PROSPECTING_BOOTSTRAP_RESULT",JSON.stringify({ok:false,reason:"no_home_service_campaign",campaigns:campaigns.map(c=>({name:c.name,status:c.status,priced:c.target_price!=null}))}));return;} const result=await runSalesCampaign(target,{manual:true}); const prospectLeads=(result.leads||[]).filter(x=>["qualified","outreach_ready"].includes(x.stage)).map(x=>({name:x.name,score:Number(x.score||0),stage:x.stage,sourceUrl:x.source_url||x.sourceUrl||null,buyerEmail:x.buyer_email||x.buyerEmail||null,fitSignals:x.evidence?.fitSignals||[]})); console.log("PROSPECTING_BOOTSTRAP_RESULT",JSON.stringify({ok:true,campaignId:target.id,summary:result.summary,prospectLeads})); } catch(error){ console.error("PROSPECTING_BOOTSTRAP_ERROR",error.message); } },9000); } if (!gmailBridgeConfigured()) { setTimeout(()=>verifyGmailConnection().then(result=>console.log("GMAIL_CONNECTION_TEST",JSON.stringify(result))).catch(error=>console.error("GMAIL_CONNECTION_TEST_FAILED",error.message)),8000); setTimeout(()=>pollGmailReplies().catch(error=>console.error("Gmail reply poll failed:",error.message)),15000); setInterval(()=>pollGmailReplies().catch(error=>console.error("Gmail reply poll failed:",error.message)),120000).unref(); } if (process.env.ORACLE_BENCHMARK_ON_START === "true") { const taskIds=String(process.env.ORACLE_BENCHMARK_TASK_IDS||"").split(",").map(x=>x.trim()).filter(Boolean); const modelIds=String(process.env.ORACLE_BENCHMARK_MODEL_IDS||"").split(",").map(x=>x.trim()).filter(Boolean); console.log("ORACLE_BENCHMARK starting one-time benchmark.", JSON.stringify({taskIds:taskIds.length?taskIds:"all",modelIds:modelIds.length?modelIds:"all"})); runBenchmarkSuite({ repeats: 1, taskIds, modelIds, resume:false }).then(() => console.log("ORACLE_BENCHMARK_RESULT", JSON.stringify(benchmarkState.report?.summary || []))).catch(error => console.error("ORACLE_BENCHMARK_ERROR", error.message)); } }); }
+async function start() { try { const state = await initStorage(); if (state.enabled) { setDynamicApiKeys(await findActiveBetaKeyHashes()); const rows = await loadRoutePerformance(); for (const row of rows) modelPerformance.set(row.route_key, { attempts: Number(row.attempts || 0), successes: Number(row.successes || 0), failures: Number(row.failures || 0), repairs: Number(row.repairs || 0), feedbackTotal: Number(row.feedback_total || 0), feedbackCount: Number(row.feedback_count || 0), avgMs: Number(row.avg_ms || 0) }); console.log(`Oracle loaded ${rows.length} learned routes from Postgres.`); await cleanupIrrelevantUncontactedLeads(); } else console.log("Oracle persistence: in-memory mode (DATABASE_URL not configured)."); } catch (error) { console.error("Oracle persistence unavailable; continuing in memory:", error.message); } app.listen(PORT, "0.0.0.0", () => { console.log(`Oracle Stack listening on 0.0.0.0:${PORT}`); setTimeout(()=>verifyGmailBridgeConnection().then(result=>console.log("GMAIL_BRIDGE_CONNECTION_TEST",JSON.stringify(result))).catch(error=>console.error("GMAIL_BRIDGE_CONNECTION_TEST_FAILED",error.message)),4000); setTimeout(()=>salesForceTick(),5000); setInterval(()=>salesForceTick(),60000).unref(); if (String(process.env.SALES_PROSPECTING_BOOTSTRAP_ON_START||"false").toLowerCase()==="true") { setTimeout(async()=>{ try { const campaigns=await listSalesCampaigns(); const target=campaigns.find(c=>/home service ai pilot/i.test(String(c.name||""))&&c.target_price!=null) || campaigns.find(c=>/(home[- ]service|lead response|appointment booking|missed calls)/i.test(String(c.objective||"")+" "+String(c.target_buyer||""))); if(!target){console.log("PROSPECTING_BOOTSTRAP_RESULT",JSON.stringify({ok:false,reason:"no_home_service_campaign",campaigns:campaigns.map(c=>({name:c.name,status:c.status,priced:c.target_price!=null}))}));return;} const result=await runSalesCampaign(target,{manual:true}); const prospectLeads=(result.leads||[]).filter(x=>["qualified","outreach_ready"].includes(x.stage)).map(x=>({name:x.name,score:Number(x.score||0),stage:x.stage,sourceUrl:x.source_url||x.sourceUrl||null,buyerEmail:x.buyer_email||x.buyerEmail||null,fitSignals:x.evidence?.fitSignals||[]})); console.log("PROSPECTING_BOOTSTRAP_RESULT",JSON.stringify({ok:true,campaignId:target.id,summary:result.summary,prospectLeads})); } catch(error){ console.error("PROSPECTING_BOOTSTRAP_ERROR",error.message); } },9000); } if (String(process.env.SALES_CONTROLLED_TEST_SEND||"false").toLowerCase()==="true") {
+    setTimeout(()=>runControlledProspectEmailTest().catch(error=>console.error("CONTROLLED_PROSPECT_EMAIL_TEST_FAILED",error.message)),55000);
+  }
+  if (!gmailBridgeConfigured()) { setTimeout(()=>verifyGmailConnection().then(result=>console.log("GMAIL_CONNECTION_TEST",JSON.stringify(result))).catch(error=>console.error("GMAIL_CONNECTION_TEST_FAILED",error.message)),8000); setTimeout(()=>pollGmailReplies().catch(error=>console.error("Gmail reply poll failed:",error.message)),15000); setInterval(()=>pollGmailReplies().catch(error=>console.error("Gmail reply poll failed:",error.message)),120000).unref(); } if (process.env.ORACLE_BENCHMARK_ON_START === "true") { const taskIds=String(process.env.ORACLE_BENCHMARK_TASK_IDS||"").split(",").map(x=>x.trim()).filter(Boolean); const modelIds=String(process.env.ORACLE_BENCHMARK_MODEL_IDS||"").split(",").map(x=>x.trim()).filter(Boolean); console.log("ORACLE_BENCHMARK starting one-time benchmark.", JSON.stringify({taskIds:taskIds.length?taskIds:"all",modelIds:modelIds.length?modelIds:"all"})); runBenchmarkSuite({ repeats: 1, taskIds, modelIds, resume:false }).then(() => console.log("ORACLE_BENCHMARK_RESULT", JSON.stringify(benchmarkState.report?.summary || []))).catch(error => console.error("ORACLE_BENCHMARK_ERROR", error.message)); } }); }
 start();
