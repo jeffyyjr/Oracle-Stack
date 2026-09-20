@@ -369,6 +369,13 @@ export async function upsertSalesLead(lead) {
     ON CONFLICT (campaign_id,source_url) DO UPDATE SET
       name=EXCLUDED.name,buyer_problem=EXCLUDED.buyer_problem,buyer_email=COALESCE(EXCLUDED.buyer_email,oracle_sales_leads.buyer_email),evidence=EXCLUDED.evidence,
       score=GREATEST(oracle_sales_leads.score,EXCLUDED.score),
+      stage=CASE
+        WHEN oracle_sales_leads.stage='lost'
+          AND oracle_sales_leads.outreach_status='not_sent'
+          AND COALESCE(oracle_sales_leads.notes,'') LIKE '%Closed automatically:%'
+        THEN EXCLUDED.stage
+        ELSE oracle_sales_leads.stage
+      END,
       outreach_draft=CASE WHEN oracle_sales_leads.outreach_status='not_sent' THEN EXCLUDED.outreach_draft ELSE oracle_sales_leads.outreach_draft END,
       updated_at=NOW()
     RETURNING *
