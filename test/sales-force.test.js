@@ -1,0 +1,42 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { normalizeCampaign, scoreEvidence, evidenceToLead, nextStage, summarizePipeline } from "../sales-force.js";
+
+test("campaign defaults to a safe recurring research loop", () => {
+  const campaign = normalizeCampaign({ objective: "Find buyers with automation pain" });
+  assert.equal(campaign.status, "running");
+  assert.equal(campaign.outreachMode, "draft");
+  assert.equal(campaign.authorizedAutoOutreach, false);
+  assert.equal(campaign.dailyRunLimit, 1);
+});
+
+test("verified commercial demand qualifies above a generic page", () => {
+  const strong = scoreEvidence({ signalType:"demand", title:"Hiring API automation help - $1,000 budget", url:"https://example.com/jobs/123", verification:{status:"VERIFIED_OPEN"} });
+  const weak = scoreEvidence({ signalType:"idea_seed", title:"Best side hustles", url:"https://example.com/blog" });
+  assert.ok(strong >= 80);
+  assert.ok(weak < strong);
+});
+
+test("lead creation drafts outreach only for qualified evidence", () => {
+  const campaign = normalizeCampaign({ objective:"Find API work", offer:"a tested API integration", minimumLeadScore:55 });
+  const lead = evidenceToLead(campaign, { signalType:"demand", title:"Need API help", snippet:"We need someone to repair our integration", url:"https://example.com/projects/1", verification:{status:"VERIFIED_OPEN"} });
+  assert.equal(lead.stage, "qualified");
+  assert.match(lead.outreachDraft, /tested API integration/);
+});
+
+test("stage machine blocks unsafe jumps", () => {
+  assert.equal(nextStage("qualified", "outreach_ready"), "outreach_ready");
+  assert.throws(() => nextStage("discovered", "contacted"));
+  assert.throws(() => nextStage("won", "replied"));
+});
+
+test("pipeline summary tracks actual wins", () => {
+  const summary = summarizePipeline([
+    {stage:"proposal",estimated_value:500},
+    {stage:"won",actual_revenue:900,actual_margin:600},
+    {stage:"lost",estimated_value:100}
+  ]);
+  assert.equal(summary.pipelineValue,500);
+  assert.equal(summary.wonRevenue,900);
+  assert.equal(summary.wonMargin,600);
+});

@@ -1,12 +1,13 @@
 {
   "name": "oracle-stack",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Adaptive AI execution layer that routes work across models and specialists, quality-checks results, and learns from outcomes.",
   "type": "module",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
+    "test": "node --test",
     "benchmark": "node scripts/benchmark.js"
   },
   "engines": {

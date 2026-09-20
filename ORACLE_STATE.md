@@ -3,7 +3,7 @@
 Purpose: durable handoff between build sessions. Read this before substantial Oracle work and update it after major milestones.
 
 ## Current phase
-Self-serve developer beta validation. Favor evidence from real users and deployment behavior over adding speculative features.
+Automatic sales-force alpha. The adaptive model router is infrastructure underneath the product, not the product itself.
 
 ## Resume procedure
 1. Read this file and README.md.
@@ -21,7 +21,15 @@ Self-serve developer beta validation. Favor evidence from real users and deploym
 - Environment-variable names may be documented; secret values may not.
 
 ## Architecture snapshot
-Oracle is an adaptive AI execution layer: route task -> choose specialist/model -> execute -> QA -> repair/fail over when needed -> learn from outcomes.
+Oracle is the brain of an autonomous revenue system: scheduled campaign -> discover real demand -> qualify evidence -> match buyer/offer -> prepare or send authorized outreach -> track deal/revenue -> learn from outcomes. The internal execution layer still routes task -> specialist/model -> QA -> repair/failover.
+
+Sales-force surfaces:
+- `/sales.html` — owner command center
+- `GET /api/sales/dashboard` — campaign, funnel, activity and revenue state
+- `POST /api/sales/campaigns` — create a persistent recurring mission
+- `POST /api/sales/campaigns/:id/run` — run immediately
+- `POST /api/sales/leads/:id/send` — authorized connector handoff
+- `POST /api/sales/leads/:id/outcome` — advance and record outcomes
 
 Documented specialist domains: Business, Research, Writing, Coding, Career, General.
 
@@ -47,10 +55,10 @@ For a new Render build, verify without paid inference:
 A successful build alone is not proof that the live service is correct.
 
 ## Current priorities
-- Validate self-serve beta with real users.
-- Harden authentication, quotas, usage accounting, and customer-facing developer flow based on observed behavior.
-- Keep routing-learning work evidence-driven.
-- Avoid feature sprawl until beta usage identifies the next bottleneck.
+- Deploy and verify the sales-force database migration and dashboard without running paid benchmarks.
+- Configure a compliant outreach connector before expecting automatic messages to leave Oracle.
+- Run a tightly capped first campaign and inspect evidence quality, qualified leads, replies, wins and margin.
+- Teach prioritization from actual deal outcomes; do not optimize for raw lead volume.
 
 ## Handoff rule
 Before ending a major build/debugging phase, replace stale details here with:

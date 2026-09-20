@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Oracle Stack autonomous sales-force command center." />
+  <title>Oracle Sales Force</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/sales.css" />
+</head>
+<body>
+  <main class="shell sales-shell">
+    <header class="topbar">
+      <a class="brand" href="/"><span class="brand-mark">O</span><span>Oracle Stack</span></a>
+      <div class="top-actions"><a class="ghost-btn" href="/">Oracle Chat</a><span class="v1-pill">SALES FORCE</span></div>
+    </header>
+    <section class="hero compact-hero sales-hero">
+      <p class="eyebrow">FOUNDER COMMAND CENTER</p>
+      <h1>Find demand.<br />Move deals.</h1>
+      <p class="subhead">Persistent campaigns run on a capped schedule. Oracle discovers real buyer signals, scores them, prepares outreach and tracks replies, proposals, wins and revenue.</p>
+    </section>
+    <section id="auth-card" class="card auth-card">
+      <div><strong>Owner access</strong><p>Enter the Oracle admin token. It stays in this browser session only.</p></div>
+      <form id="auth-form" class="inline-form"><input id="admin-token" type="password" autocomplete="off" placeholder="Admin token" required /><button type="submit">Open command center</button></form>
+    </section>
+    <div id="dashboard" class="hidden">
+      <section class="metric-grid" aria-label="Sales metrics">
+        <article class="metric card"><span>Total leads</span><strong id="m-leads">0</strong></article>
+        <article class="metric card"><span>Active pipeline</span><strong id="m-active">0</strong></article>
+        <article class="metric card"><span>Won revenue</span><strong id="m-revenue">$0</strong></article>
+        <article class="metric card"><span>Won margin</span><strong id="m-margin">$0</strong></article>
+      </section>
+      <section class="sales-grid">
+        <form id="campaign-form" class="card campaign-form">
+          <div class="section-heading"><div><p class="eyebrow">NEW MISSION</p><h2>Deploy the sales force</h2></div></div>
+          <label>Campaign name<input name="name" maxlength="120" placeholder="No-inventory opportunity hunt" /></label>
+          <label>Mission<textarea name="objective" maxlength="1200" required placeholder="Find legitimate, low-capital opportunities with current buyer demand and a clear path to a profitable sale."></textarea></label>
+          <label>What we can sell<textarea name="offer" maxlength="1000" placeholder="Leave blank if Oracle should discover the offer."></textarea></label>
+          <div class="two-col"><label>Target buyer<input name="targetBuyer" placeholder="Businesses with urgent automation pain" /></label><label>Minimum score<input name="minimumLeadScore" type="number" min="0" max="100" value="55" /></label></div>
+          <label>Constraints<textarea name="constraints" maxlength="1200" placeholder="No inventory, low upfront cost, legal and platform-compliant."></textarea></label>
+          <div class="two-col"><label>Run cadence<select name="cadenceMinutes"><option value="1440">Daily</option><option value="720">Twice daily</option><option value="10080">Weekly</option></select></label><label>Leads per run<input name="maxLeadsPerRun" type="number" min="1" max="25" value="8" /></label></div>
+          <label class="check-row"><input name="autoOutreach" type="checkbox" /> Automatically send qualified outreach through the configured connector</label>
+          <p class="form-note">Discovery and drafting work automatically. Outreach sends only when this box is authorized and a connector is configured. Payments and contracts stay outside automation.</p>
+          <button class="primary-btn" type="submit">Launch campaign</button><p id="campaign-status" class="form-status"></p>
+        </form>
+        <section class="card campaign-list-card">
+          <div class="section-heading"><div><p class="eyebrow">LIVE MISSIONS</p><h2>Campaigns</h2></div><button id="refresh" class="ghost-btn" type="button">Refresh</button></div>
+          <div id="campaigns" class="campaign-list"><p class="empty">No campaigns yet.</p></div>
+        </section>
+      </section>
+      <section class="card leads-card"><div class="section-heading"><div><p class="eyebrow">DEAL PIPELINE</p><h2>Buyer opportunities</h2></div></div><div class="table-wrap"><table><thead><tr><th>Lead</th><th>Score</th><th>Stage</th><th>Outreach</th><th>Value</th><th>Action</th></tr></thead><tbody id="leads"><tr><td colspan="6" class="empty">No leads yet.</td></tr></tbody></table></div></section>
+      <section class="card activity-card"><div class="section-heading"><div><p class="eyebrow">AUTOMATION LOG</p><h2>Recent activity</h2></div></div><div id="events" class="event-list"></div></section>
+    </div>
+  </main>
+  <script src="/sales.js" defer></script>
+</body>
+</html>

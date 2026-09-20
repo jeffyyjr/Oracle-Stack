@@ -18,6 +18,14 @@ Oracle Stack is evolving from a model-routing layer into an autonomous opportuni
 - Optimize for completed profitable transactions, not agent activity.
 - Track failures too. A workflow that generates lots of leads but no sales should lose priority.
 
+## Implemented control loop
+
+- Persistent scheduled campaigns with pause/resume, cadence and daily-run caps.
+- Structured leads, evidence, stages, outreach drafts, events, revenue and margin.
+- Demand-first discovery and lead scoring.
+- Owner command center at `/sales.html`.
+- Optional signed outreach webhook, used only after campaign-level authorization.
+
 ## Next build
 
-Wire the pipeline into Oracle routing, add structured opportunity/deal storage, then add approved external discovery sources and outreach integrations.
+Connect an approved outreach provider, ingest replies and automate proposal handoffs. Then use real conversion and margin outcomes—not activity volume—to reprioritize campaign types.
