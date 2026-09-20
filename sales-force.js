@@ -102,7 +102,7 @@ export function campaignEvidenceRelevant(campaign = {}, item = {}) {
 
 function explicitCommercialIntent(item) {
   const haystack = `${item.title || ""} ${item.snippet || ""}`.toLowerCase();
-  return /(hiring|looking for|need (a|an|someone|help)|seeking|request for (proposal|quote)|rfp|budget|fixed.price|hourly|will pay|bounty|paid)/.test(haystack);
+  return /(hiring|need (?:a|an|someone|help)|seeking (?:a|an|someone|provider|vendor|contractor|developer|agency)|looking for (?:someone|a vendor|an agency|a contractor|a developer|help with)|request for (?:proposal|quote)|\brfp\b|\brfq\b|budget|fixed.price|hourly|will pay|bounty|paid (?:project|work|gig|task|job))/i.test(haystack);
 }
 
 export function scoreEvidence(item = {}) {
@@ -119,7 +119,12 @@ export function scoreEvidence(item = {}) {
 
 export function evidenceToLead(campaign, item) {
   const score = scoreEvidence(item);
-  const qualified = score >= campaign.minimumLeadScore && item.verification?.status !== "CLOSED";
+  const qualified =
+    score >= campaign.minimumLeadScore &&
+    item.signalType === "demand" &&
+    item.qualification === "QUALIFIED" &&
+    item.verification?.status === "VERIFIED_OPEN" &&
+    explicitCommercialIntent(item);
   const sourceUrl = text(item.url, 2000);
   return {
     id: crypto.randomUUID(),
