@@ -164,22 +164,35 @@ function prospectFitSignals(text = "") {
 
 function contactLinks(html = "", baseUrl = "") {
   const links=[]; const rx=/href\s*=\s*["']([^"'#]+)["']/gi; let m;
+  const base=publicWebsiteUrl(baseUrl); if(!base) return [];
+  const host=baseHost(base.hostname);
   while((m=rx.exec(String(html)))) {
     if(!/(contact|schedule|book|request|estimate|quote)/i.test(m[1])) continue;
-    try { const u=new URL(m[1],baseUrl); if(publicWebsiteUrl(u.href)) links.push(u.href); } catch {}
+    try {
+      const u=publicWebsiteUrl(new URL(m[1],base.href).href);
+      if(u && baseHost(u.hostname)===host) links.push(u.href);
+    } catch {}
   }
   return [...new Set(links)].slice(0,2);
 }
 
 async function fetchPublicHtml(url, timeoutMs = 8000) {
-  const safe=publicWebsiteUrl(url); if(!safe) return null;
+  let safe=publicWebsiteUrl(url); if(!safe) return null;
   const controller=new AbortController(); const timer=setTimeout(()=>controller.abort(),timeoutMs);
   try {
-    const r=await fetch(safe.href,{signal:controller.signal,redirect:"follow",headers:{"User-Agent":"Oracle-Stack-Prospect-Research/1.0","Accept":"text/html,application/xhtml+xml"}});
-    if(!r.ok) return null;
-    const type=String(r.headers.get("content-type")||"");
-    if(!type.includes("text/html")) return null;
-    return {url:r.url,html:(await r.text()).slice(0,350000)};
+    for(let redirectCount=0;redirectCount<4;redirectCount++) {
+      const r=await fetch(safe.href,{signal:controller.signal,redirect:"manual",headers:{"User-Agent":"Oracle-Stack-Prospect-Research/1.0","Accept":"text/html,application/xhtml+xml"}});
+      if([301,302,303,307,308].includes(r.status)) {
+        const location=r.headers.get("location"); if(!location) return null;
+        const next=publicWebsiteUrl(new URL(location,safe.href).href); if(!next) return null;
+        safe=next; continue;
+      }
+      if(!r.ok) return null;
+      const type=String(r.headers.get("content-type")||"");
+      if(!type.includes("text/html")) return null;
+      return {url:safe.href,html:(await r.text()).slice(0,350000)};
+    }
+    return null;
   } catch { return null; } finally { clearTimeout(timer); }
 }
 
