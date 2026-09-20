@@ -13,6 +13,52 @@ function stripHtml(html = "") {
     .trim();
 }
 
+async function verifyGithubIssue(url, verifiedAt) {
+  const match = String(url || "").match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)/i);
+  if (!match) return null;
+
+  const [, owner, repo, number] = match;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), VERIFY_TIMEOUT_MS);
+  try {
+    const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${number}`, {
+      signal: controller.signal,
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": "OracleStack/1.0-public-listing-verifier"
+      }
+    });
+    if (response.status === 404 || response.status === 410) {
+      return { status: "CLOSED", verifiedAt, httpStatus: response.status, reason: "github_issue_not_found" };
+    }
+    if (!response.ok) {
+      return { status: response.status === 403 ? "INACCESSIBLE" : "UNKNOWN", verifiedAt, httpStatus: response.status, reason: "github_api_unavailable" };
+    }
+
+    const issue = await response.json();
+    if (issue?.pull_request) {
+      return { status: "UNKNOWN", verifiedAt, httpStatus: response.status, reason: "github_result_is_pull_request" };
+    }
+
+    const status = issue?.state === "open" ? "VERIFIED_OPEN" : "CLOSED";
+    const labels = Array.isArray(issue?.labels)
+      ? issue.labels.map(x => typeof x === "string" ? x : x?.name).filter(Boolean).slice(0, 8)
+      : [];
+
+    return {
+      status,
+      verifiedAt,
+      httpStatus: response.status,
+      finalUrl: issue?.html_url || url,
+      evidence: `GitHub API reports issue state=${issue?.state || "unknown"}. Title: ${issue?.title || ""}. Labels: ${labels.join(", ") || "none"}.`
+    };
+  } catch (error) {
+    return { status: error?.name === "AbortError" ? "INACCESSIBLE" : "UNKNOWN", verifiedAt, reason: String(error?.message || error) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function statusFromPage(url, response, text) {
   const lower = text.toLowerCase();
   if (response.status === 404 || response.status === 410) return "CLOSED";
@@ -32,6 +78,8 @@ function statusFromPage(url, response, text) {
 export async function verifyListing(url) {
   const verifiedAt = new Date().toISOString();
   if (!/^https?:\/\//i.test(String(url || ""))) return { status: "UNKNOWN", verifiedAt, reason: "invalid_url" };
+  const github = await verifyGithubIssue(url, verifiedAt);
+  if (github) return github;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), VERIFY_TIMEOUT_MS);
   try {

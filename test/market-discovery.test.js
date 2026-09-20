@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   broadOpportunityIntent,
   buildDiscoveryQuerySpecs,
+  buildAccessibleRescueSpecs,
   classifyDemandEvidence
 } from "../market-discovery.js";
 
@@ -38,4 +39,14 @@ test("unverified direct listing remains verify-only", () => {
     signalType: "demand",
     verification: { status: "INACCESSIBLE" }
   }), "VERIFY");
+});
+
+
+test("accessible rescue avoids blocked marketplace-only dead end", () => {
+  const specs = buildAccessibleRescueSpecs("Find me something legitimate I can sell without holding inventory");
+  assert.ok(specs.length >= 3);
+  assert.ok(specs.some(x => x.channel === "github"));
+  assert.ok(specs.some(x => x.channel === "reddit"));
+  assert.ok(specs.some(x => x.channel === "public_rfp"));
+  assert.ok(specs.every(x => !["upwork", "freelancer", "peopleperhour"].includes(x.channel)));
 });

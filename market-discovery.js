@@ -176,6 +176,70 @@ export function buildDiscoveryQuerySpecs(request = "") {
   };
 }
 
+export function buildAccessibleRescueSpecs(request = "") {
+  const goal = compactGoal(request, 160) || "small business service";
+  const broad = broadOpportunityIntent(request);
+  const techIntent = /tech|software|saas|app|website|api|integration|automation|deploy|bug|code|data|ai|computer/i.test(goal);
+
+  if (broad) {
+    return [
+      {
+        channel: "github",
+        signalType: "demand",
+        q: 'site:github.com/*/*/issues/ (bounty OR "paid bounty" OR reward) (automation OR integration OR API OR website OR data) -closed'
+      },
+      {
+        channel: "reddit",
+        signalType: "demand",
+        q: 'site:reddit.com/r/forhire/comments/ ("[Hiring]" OR hiring) (automation OR bookkeeping OR "video editor" OR Shopify OR WordPress) (budget OR paid OR "$")'
+      },
+      {
+        channel: "public_rfp",
+        signalType: "demand",
+        q: '("request for proposal" OR "request for quote" OR solicitation) ("website redesign" OR "digital marketing" OR "video production") ("responses due" OR deadline OR "due date")'
+      },
+      {
+        channel: "public_rfp",
+        signalType: "demand",
+        q: '("request for proposal" OR "request for quote" OR solicitation) (bookkeeping OR accounting OR automation OR "administrative services") ("responses due" OR deadline OR "due date")'
+      }
+    ];
+  }
+
+  if (techIntent) {
+    return [
+      {
+        channel: "github",
+        signalType: "demand",
+        q: `site:github.com/*/*/issues/ (bounty OR "paid bounty" OR reward) ("${goal.slice(0, 100)}" OR automation OR API OR integration) -closed`
+      },
+      {
+        channel: "reddit",
+        signalType: "demand",
+        q: `site:reddit.com/r/forhire/comments/ ("[Hiring]" OR hiring) ("${goal.slice(0, 100)}" OR automation OR API OR developer) (budget OR paid OR "$")`
+      },
+      {
+        channel: "public_rfp",
+        signalType: "demand",
+        q: `("request for proposal" OR "request for quote" OR solicitation) ("${goal.slice(0, 100)}" OR software OR automation OR website) ("responses due" OR deadline OR "due date")`
+      }
+    ];
+  }
+
+  return [
+    {
+      channel: "reddit",
+      signalType: "demand",
+      q: `site:reddit.com/r/forhire/comments/ ("[Hiring]" OR hiring) "${goal.slice(0, 100)}" (budget OR paid OR "$")`
+    },
+    {
+      channel: "public_rfp",
+      signalType: "demand",
+      q: `("request for proposal" OR "request for quote" OR solicitation) "${goal.slice(0, 100)}" ("responses due" OR deadline OR "due date")`
+    }
+  ];
+}
+
 function looksLikeListing(item) {
   const u = String(item?.url || "").toLowerCase();
   const t = `${item?.title || ""} ${item?.snippet || ""}`.toLowerCase();
@@ -191,7 +255,7 @@ function looksLikeListing(item) {
     return detailPath && commercialText && !academicRisk;
   }
 
-  if (item?.channel === "github") return /\/issues\/\d+/.test(u);
+  if (item?.channel === "github") return /\/issues\/\d+/.test(u) && /(bounty|paid bounty|paid task|reward|sponsor|compensation|\$\s?\d)/.test(t);
   if (item?.channel === "reddit") return /\/comments\//.test(u) && /(hire|hiring|paid|budget|looking for someone|need someone|will pay)/.test(t);
   if (item?.channel === "public_rfp") return /(rfp|tender|procurement|solicitation|request for proposal|request for quote)/.test(t);
   return false;
@@ -213,66 +277,99 @@ export async function discoverMarketEvidence(request, { count = 14 } = {}) {
     provider: null,
     queries: [],
     results: [],
-    qualifyingDemandCount: 0
+    qualifyingDemandCount: 0,
+    rescueTriggered: false
   };
 
   const plan = buildDiscoveryQuerySpecs(request);
-  const querySpecs = plan.specs;
-  const queries = querySpecs.map(x => x.q);
   const provider = process.env.BRAVE_SEARCH_API_KEY ? "brave" : "serper";
   const search = provider === "brave" ? searchBrave : searchSerper;
-  const perQuery = plan.broad ? 6 : plan.techIntent ? 8 : Math.max(4, Math.ceil(count / 2));
-
-  const batches = await Promise.allSettled(
-    querySpecs.map(spec => search(spec.q, perQuery, spec.channel, spec.signalType))
-  );
-
   const seen = new Set();
-  const results = [];
-  const rejected = [];
+  const collected = [];
+  const queries = [];
+  let rejectedCount = 0;
 
-  for (const batch of batches) {
-    if (batch.status !== "fulfilled") continue;
-    for (const item of batch.value) {
-      if (!item.url || seen.has(item.url)) continue;
-      seen.add(item.url);
-      if (!looksLikeListing(item)) {
-        rejected.push(item);
-        continue;
+  async function collect(specs, perQuery) {
+    if (!specs.length) return [];
+    queries.push(...specs.map(x => x.q));
+    const start = collected.length;
+    const batches = await Promise.allSettled(
+      specs.map(spec => search(spec.q, perQuery, spec.channel, spec.signalType))
+    );
+    for (const batch of batches) {
+      if (batch.status !== "fulfilled") continue;
+      for (const item of batch.value) {
+        if (!item.url || seen.has(item.url)) continue;
+        seen.add(item.url);
+        if (!looksLikeListing(item)) {
+          rejectedCount++;
+          continue;
+        }
+        collected.push(item);
       }
-      results.push(item);
     }
+    return collected.slice(start);
   }
 
-  // Keep direct demand ahead of context so verification budget goes to actual buyers.
-  results.sort((a, b) => {
+  async function enrich(items, verificationLimit) {
+    const verified = await verifyListings(items, verificationLimit);
+    const verificationByUrl = new Map(verified.map(x => [x.url, x.verification]));
+    return items.map(x => {
+      const item = { ...x, verification: verificationByUrl.get(x.url) || null };
+      return { ...item, qualification: classifyDemandEvidence(item) };
+    });
+  }
+
+  const primaryPerQuery = plan.broad ? 6 : plan.techIntent ? 8 : Math.max(4, Math.ceil(count / 2));
+  const primaryRaw = await collect(plan.specs, primaryPerQuery);
+
+  // Direct-demand sources first so the verification budget is not spent on context.
+  primaryRaw.sort((a, b) => {
     const ad = a.signalType === "demand" && DIRECT_DEMAND_CHANNELS.has(a.channel) ? 1 : 0;
     const bd = b.signalType === "demand" && DIRECT_DEMAND_CHANNELS.has(b.channel) ? 1 : 0;
     return bd - ad;
   });
 
-  const selected = results.slice(0, count);
-  const verified = await verifyListings(selected, plan.broad ? 10 : plan.techIntent ? 8 : 6);
-  const verificationByUrl = new Map(verified.map(x => [x.url, x.verification]));
-  const enriched = selected.map(x => {
-    const item = { ...x, verification: verificationByUrl.get(x.url) || null };
-    return { ...item, qualification: classifyDemandEvidence(item) };
+  const primarySelected = primaryRaw.slice(0, count);
+  let enriched = await enrich(primarySelected, plan.broad ? 10 : plan.techIntent ? 8 : 6);
+  let rescueTriggered = enriched.every(x => x.qualification !== "QUALIFIED");
+  let rescueResultCount = 0;
+
+  // Do not stop just because major marketplaces block direct verification.
+  // Widen the scan automatically to sources that are more likely to be publicly verifiable.
+  if (rescueTriggered) {
+    const rescueSpecs = buildAccessibleRescueSpecs(request);
+    const rescueRaw = await collect(rescueSpecs, 8);
+    rescueResultCount = rescueRaw.length;
+    const rescueEnriched = await enrich(rescueRaw, 12);
+    enriched = [...enriched, ...rescueEnriched];
+  }
+
+  const qualificationRank = { QUALIFIED: 4, VERIFY: 3, CONTEXT_ONLY: 2, REJECTED: 1 };
+  const sourceRank = { github: 4, public_rfp: 3, reddit: 3, freelancer: 2, peopleperhour: 2, upwork: 1 };
+  enriched.sort((a, b) => {
+    const q = (qualificationRank[b.qualification] || 0) - (qualificationRank[a.qualification] || 0);
+    if (q) return q;
+    return (sourceRank[b.channel] || 0) - (sourceRank[a.channel] || 0);
   });
 
-  const qualifyingDemandCount = enriched.filter(x => x.qualification === "QUALIFIED").length;
-  const verifyDemandCount = enriched.filter(x => x.qualification === "VERIFY").length;
+  const finalResults = enriched.slice(0, count);
+  const qualifyingDemandCount = finalResults.filter(x => x.qualification === "QUALIFIED").length;
+  const verifyDemandCount = finalResults.filter(x => x.qualification === "VERIFY").length;
 
   return {
     enabled: true,
     provider,
     queries,
-    results: enriched,
-    strategy: plan.strategy,
-    rejectedCount: rejected.length,
-    demandEvidenceCount: enriched.filter(x => x.signalType === "demand").length,
+    results: finalResults,
+    strategy: rescueTriggered ? `${plan.strategy}_accessible_rescue` : plan.strategy,
+    rejectedCount,
+    demandEvidenceCount: finalResults.filter(x => x.signalType === "demand").length,
     qualifyingDemandCount,
     verifyDemandCount,
-    supplyEvidenceCount: enriched.filter(x => x.signalType !== "demand").length
+    supplyEvidenceCount: finalResults.filter(x => x.signalType !== "demand").length,
+    rescueTriggered,
+    rescueResultCount
   };
 }
 
