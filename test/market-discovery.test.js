@@ -65,3 +65,14 @@ test("home-service campaign uses business prospecting mode", () => {
   assert.ok(plan.specs.every(x => x.channel === "business_web"));
   assert.ok(plan.specs.every(x => x.signalType === "prospect"));
 });
+
+
+test("home-service objective triggers prospecting even without targetBuyer", () => {
+  const plan = buildDiscoveryQuerySpecs([
+    "Find real home-service businesses that could benefit from faster lead response and appointment booking.",
+    "Offer: AI lead-response and appointment-booking automation"
+  ].join("\n"));
+  assert.equal(plan.strategy, "home_service_business_prospecting");
+  assert.equal(plan.prospecting, true);
+  assert.ok(plan.verticals.includes("hvac"));
+});
