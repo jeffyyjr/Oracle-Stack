@@ -401,7 +401,10 @@ async function cleanupIrrelevantUncontactedLeads() {
       closed++;
     }
   }
-  console.log("SALES_STARTUP_CLEANUP",JSON.stringify({checked,closed}));
+  const survivors=(await listSalesLeads({limit:50}))
+    .filter(x=>!["won","lost"].includes(x.stage))
+    .map(x=>({name:x.name,score:Number(x.score||0),stage:x.stage,sourceUrl:x.source_url||null}));
+  console.log("SALES_STARTUP_CLEANUP",JSON.stringify({checked,closed,survivors}));
   return { checked, closed };
 }
 
