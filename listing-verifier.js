@@ -59,6 +59,12 @@ async function verifyGithubIssue(url, verifiedAt) {
   }
 }
 
+function explicitPublicContactEmail(url, text) {
+  if (/upwork\.com|freelancer\.com|peopleperhour\.com|reddit\.com|github\.com/i.test(String(url || ""))) return null;
+  const match = String(text || "").match(/(?:contact|questions?|inquiries|email|submit(?:\s+(?:the\s+)?(?:proposal|quote|bid))?\s+to)\s*[:\-]?\s*(?:at\s+)?([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i);
+  return match ? match[1].toLowerCase() : null;
+}
+
 function statusFromPage(url, response, text) {
   const lower = text.toLowerCase();
   if (response.status === 404 || response.status === 410) return "CLOSED";
@@ -95,7 +101,8 @@ export async function verifyListing(url) {
       verifiedAt,
       httpStatus: response.status,
       finalUrl: response.url,
-      evidence: text.slice(0, 5000)
+      evidence: text.slice(0, 5000),
+      contactEmail: explicitPublicContactEmail(response.url || url, text)
     };
   } catch (error) {
     return { status: error?.name === "AbortError" ? "INACCESSIBLE" : "UNKNOWN", verifiedAt, reason: String(error?.message || error) };
