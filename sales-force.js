@@ -147,6 +147,13 @@ export function campaignEvidenceQualifies(campaign = {}, item = {}) {
   return explicitCommercialIntent(item);
 }
 
+export function shouldReviveAutoClosedLead(existing = {}, candidate = {}) {
+  if (existing.stage !== "lost" || existing.outreach_status !== "not_sent") return false;
+  if (candidate.stage !== "qualified") return false;
+  if (!/closed automatically/i.test(String(existing.notes || ""))) return false;
+  return true;
+}
+
 export function scoreEvidence(item = {}) {
   if (item.signalType === "prospect" && Number.isFinite(Number(item.prospectScore))) {
     return Math.max(0,Math.min(100,Number(item.prospectScore)));
