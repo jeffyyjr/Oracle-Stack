@@ -10,6 +10,14 @@ const DIRECT_DEMAND_CHANNELS = new Set([
   "public_rfp"
 ]);
 
+export function salesChannelEnabled(channel = "") {
+  const normalized = String(channel || "").trim().toLowerCase();
+  if (normalized === "upwork") {
+    return String(process.env.SALES_UPWORK_ENABLED || "").trim().toLowerCase() === "true";
+  }
+  return true;
+}
+
 function cleanText(value = "") {
   return String(value).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
@@ -353,7 +361,7 @@ function priorityBuyerSeeds() {
       scoutStatus:String(x?.scoutStatus||"").trim().toUpperCase() || null,
       scoutVerifiedAt:String(x?.scoutVerifiedAt||"").trim() || null,
       scoutEvidence:cleanText(x?.scoutEvidence||"").slice(0,2000) || null
-    })).filter(x=>/^https?:\/\//i.test(x.url));
+    })).filter(x=>/^https?:\/\//i.test(x.url) && salesChannelEnabled(x.channel));
   } catch { return []; }
 }
 
@@ -701,6 +709,7 @@ export async function discoverMarketEvidence(request, { count = 14 } = {}) {
   let rejectedCount = 0;
 
   async function collect(specs, perQuery) {
+    specs = specs.filter(spec => salesChannelEnabled(spec.channel));
     if (!specs.length) return [];
     queries.push(...specs.map(x => x.q));
     const start = collected.length;
