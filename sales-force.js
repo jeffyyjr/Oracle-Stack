@@ -87,7 +87,9 @@ export function campaignEvidenceRelevant(campaign = {}, item = {}) {
   const channel = String(item.channel || item.evidence?.channel || "").toLowerCase();
 
   if (/micro bounty|bounty alert|best .* tools|ranked for 20\d\d|software crm|autonomous ai systems/i.test(hayText)) return false;
-  if (buyerTerms.length) {
+  if (item.signalType === "prospect") {
+    if (buyerTerms.length && buyerMatches < 1) return false;
+  } else if (buyerTerms.length) {
     if (buyerMatches < 1) return false;
     if (problemTerms.length && problemMatches < 1) return false;
   } else if (problemTerms.length && problemMatches < 2) {
@@ -112,6 +114,13 @@ export function campaignEvidenceQualifies(campaign = {}, item = {}) {
   const editorialUrl = /\/(blog|blogs|guide|guides|article|articles|resources|learn|glossary)\//i.test(url);
   if (editorialTitle || editorialUrl) return false;
   if (!campaignEvidenceRelevant(campaign,item)) return false;
+
+  if (item.signalType === "prospect") {
+    return item.verification?.status === "VERIFIED_OPEN" &&
+      item.qualification === "PROSPECT_QUALIFIED" &&
+      Boolean(explicitBuyerEmail(item));
+  }
+
   if (item.signalType !== "demand") return false;
   if (item.verification?.status !== "VERIFIED_OPEN") return false;
   if (item.qualification && item.qualification !== "QUALIFIED") return false;
@@ -119,6 +128,9 @@ export function campaignEvidenceQualifies(campaign = {}, item = {}) {
 }
 
 export function scoreEvidence(item = {}) {
+  if (item.signalType === "prospect" && Number.isFinite(Number(item.prospectScore))) {
+    return Math.max(0,Math.min(100,Number(item.prospectScore)));
+  }
   let score = 20;
   if (item.signalType === "demand") score += 20;
   if (explicitCommercialIntent(item)) score += 20;
@@ -145,6 +157,9 @@ export function evidenceToLead(campaign, item) {
     evidence: {
       channel: item.channel || null,
       signalType: item.signalType || null,
+      qualification: item.qualification || null,
+      prospecting: item.prospecting === true,
+      fitSignals: Array.isArray(item.fitSignals) ? item.fitSignals.slice(0,12) : [],
       verification: item.verification || null,
       observedAt: new Date().toISOString()
     },
@@ -157,8 +172,12 @@ export function evidenceToLead(campaign, item) {
 }
 
 export function buildOutreachDraft(campaign, item) {
-  const problem = text(item.snippet || item.title, 420);
   const offer = campaign.offer || "a focused solution to this problem";
+  if (item.signalType === "prospect") {
+    const business = text(item.title || "your business",180);
+    return `Hi — I came across ${business} while researching home-service companies. We help service teams respond to inbound leads, qualify them, book appointments, and follow up automatically. If improving lead response or booking is useful for your team, I can send a short plan showing how ${offer} could fit your current workflow. If not, no problem.`;
+  }
+  const problem = text(item.snippet || item.title, 420);
   return `Hi — I saw your request about ${problem}. We may be able to help with ${offer}. If the need is still open, I can send a short plan with scope, timing, and a clear price. No pressure if it has already been handled.`;
 }
 

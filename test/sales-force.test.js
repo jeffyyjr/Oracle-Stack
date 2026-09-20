@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { normalizeCampaign, scoreEvidence, evidenceToLead, normalizeDeliveryReceipt, nextStage, summarizePipeline } from "../sales-force.js";
+import { normalizeCampaign, scoreEvidence, evidenceToLead, normalizeDeliveryReceipt, nextStage, summarizePipeline, campaignEvidenceQualifies } from "../sales-force.js";
 
 test("campaign defaults to a safe recurring research loop", () => {
   const campaign = normalizeCampaign({ objective: "Find buyers with automation pain" });
@@ -58,4 +58,51 @@ test("pipeline summary tracks actual wins", () => {
   assert.equal(summary.pipelineValue,500);
   assert.equal(summary.wonRevenue,900);
   assert.equal(summary.wonMargin,600);
+});
+
+
+test("verified home-service prospect qualifies with public role email", () => {
+  const campaign = normalizeCampaign({
+    objective:"Find home-service businesses that could benefit from faster lead response",
+    offer:"AI lead-response and appointment-booking automation",
+    targetBuyer:"HVAC, plumbing, electrical, roofing and landscaping businesses",
+    minimumLeadScore:70
+  });
+  const item = {
+    signalType:"prospect",
+    qualification:"PROSPECT_QUALIFIED",
+    prospectScore:80,
+    prospecting:true,
+    title:"Acme HVAC",
+    snippet:"Verified public business website for hvac. Observable fit signals: service_request_cta, urgent_lead_flow.",
+    url:"https://acmehvac.example/contact",
+    buyerEmail:"info@acmehvac.example",
+    verification:{status:"VERIFIED_OPEN"}
+  };
+  assert.equal(campaignEvidenceQualifies(campaign,item), true);
+  const lead=evidenceToLead(campaign,item);
+  assert.equal(lead.stage,"qualified");
+  assert.equal(lead.buyerEmail,"info@acmehvac.example");
+  assert.doesNotMatch(lead.outreachDraft,/saw your request/i);
+  assert.match(lead.outreachDraft,/inbound leads/i);
+});
+
+test("prospect without a public business email cannot qualify", () => {
+  const campaign = normalizeCampaign({
+    objective:"Find HVAC businesses",
+    offer:"lead-response automation",
+    targetBuyer:"HVAC businesses",
+    minimumLeadScore:70
+  });
+  const item = {
+    signalType:"prospect",
+    qualification:"PROSPECT_QUALIFIED",
+    prospectScore:85,
+    title:"Acme HVAC",
+    snippet:"Verified public business website for hvac.",
+    url:"https://acmehvac.example",
+    verification:{status:"VERIFIED_OPEN"}
+  };
+  assert.equal(campaignEvidenceQualifies(campaign,item), false);
+  assert.equal(evidenceToLead(campaign,item).stage,"discovered");
 });

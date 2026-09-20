@@ -44,7 +44,7 @@ async function searchBrave(query, count, channel = "general", signalType = "dema
   url.searchParams.set("country", "US");
   url.searchParams.set("search_lang", "en");
   url.searchParams.set("count", String(Math.min(12, Math.max(5, count))));
-  url.searchParams.set("freshness", "pm");
+  if (channel !== "business_web") url.searchParams.set("freshness", "pm");
   url.searchParams.set("maximum_number_of_urls", "8");
   url.searchParams.set("maximum_number_of_tokens", "3072");
   url.searchParams.set("maximum_number_of_tokens_per_url", "768");
@@ -96,6 +96,173 @@ function searchTermGroup(value = "", max = 8) {
   return terms.length ? "(" + terms.map(x => /^[a-z0-9+#.-]+$/i.test(x) ? x : `"${x}"`).join(" OR ") + ")" : "";
 }
 
+
+const HOME_SERVICE_VERTICALS = [
+  ["hvac", /\b(hvac|heating|cooling|air conditioning)\b/i],
+  ["plumbing", /\b(plumb(?:er|ing)?)\b/i],
+  ["electrical", /\b(electric(?:al|ian)?)\b/i],
+  ["roofing", /\b(roof(?:er|ing)?)\b/i],
+  ["landscaping", /\b(landscap(?:e|er|ing)?)\b/i],
+  ["garage door", /\bgarage door\b/i],
+  ["pest control", /\bpest control\b/i],
+  ["tree service", /\btree service\b/i],
+  ["remodeling", /\bremodel(?:er|ing)?\b/i]
+];
+
+function homeServiceVerticals(value = "") {
+  const found = HOME_SERVICE_VERTICALS.filter(([,rx]) => rx.test(String(value))).map(([name]) => name);
+  return found.length ? found : (/home[- ]service|contractor/i.test(String(value)) ? ["hvac","plumbing","electrical","roofing","landscaping"] : []);
+}
+
+function publicWebsiteUrl(raw = "") {
+  try {
+    const u = new URL(String(raw));
+    if (!["http:","https:"].includes(u.protocol)) return null;
+    const h = u.hostname.toLowerCase();
+    if (!h || h === "localhost" || h.endsWith(".local") || h === "::1" || /^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h) || /^169\.254\./.test(h) || /^172\.(1[6-9]|2\d|3[01])\./.test(h)) return null;
+    return u;
+  } catch { return null; }
+}
+
+function baseHost(hostname = "") {
+  return String(hostname).toLowerCase().replace(/^www\./,"");
+}
+
+function extractPublicRoleEmail(html = "", hostname = "") {
+  const host = baseHost(hostname);
+  const decoded = String(html).replace(/&#64;|&#x40;/gi,"@").replace(/&#46;|&#x2e;/gi,".");
+  const matches = decoded.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [];
+  const roles = /^(info|hello|contact|office|service|services|sales|support|estimates?|quotes?|booking|appointments?|admin|customerservice)$/i;
+  for (const raw of [...new Set(matches.map(x=>x.toLowerCase()))]) {
+    const [local,domain] = raw.split("@");
+    if (!local || !domain || !roles.test(local.replace(/[._-]/g,""))) continue;
+    const d = baseHost(domain);
+    if (d === host || d.endsWith("." + host) || host.endsWith("." + d)) return raw.slice(0,320);
+  }
+  return null;
+}
+
+function visiblePageText(html = "") {
+  return cleanText(String(html)
+    .replace(/<script[\s\S]*?<\/script>/gi," ")
+    .replace(/<style[\s\S]*?<\/style>/gi," ")
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi," "))
+    .slice(0,50000);
+}
+
+function prospectFitSignals(text = "") {
+  const t=String(text).toLowerCase(), out=[];
+  if (/request (?:service|an estimate|a quote)|schedule (?:service|an appointment)|book (?:online|now|service)/i.test(t)) out.push("service_request_cta");
+  if (/24\s*\/\s*7|24-hour|24 hour|emergency service|same[- ]day service/i.test(t)) out.push("urgent_lead_flow");
+  if (/financing|payment plans?|special offers?|coupons?/i.test(t)) out.push("sales_conversion_flow");
+  if (/service areas?|areas we serve|locations|multiple locations/i.test(t)) out.push("multi_area_operations");
+  if (/residential.+commercial|commercial.+residential/i.test(t)) out.push("multi_segment_operations");
+  if (/call (?:now|today)|phone|tel:/i.test(t)) out.push("phone_lead_cta");
+  if (/contact form|name.+email.+phone|send message/i.test(t)) out.push("web_lead_form");
+  return [...new Set(out)];
+}
+
+function contactLinks(html = "", baseUrl = "") {
+  const links=[]; const rx=/href\s*=\s*["']([^"'#]+)["']/gi; let m;
+  const base=publicWebsiteUrl(baseUrl); if(!base) return [];
+  const host=baseHost(base.hostname);
+  while((m=rx.exec(String(html)))) {
+    if(!/(contact|schedule|book|request|estimate|quote)/i.test(m[1])) continue;
+    try {
+      const u=publicWebsiteUrl(new URL(m[1],base.href).href);
+      if(u && baseHost(u.hostname)===host) links.push(u.href);
+    } catch {}
+  }
+  return [...new Set(links)].slice(0,2);
+}
+
+async function fetchPublicHtml(url, timeoutMs = 8000) {
+  let safe=publicWebsiteUrl(url); if(!safe) return null;
+  const controller=new AbortController(); const timer=setTimeout(()=>controller.abort(),timeoutMs);
+  try {
+    for(let redirectCount=0;redirectCount<4;redirectCount++) {
+      const r=await fetch(safe.href,{signal:controller.signal,redirect:"manual",headers:{"User-Agent":"Oracle-Stack-Prospect-Research/1.0","Accept":"text/html,application/xhtml+xml"}});
+      if([301,302,303,307,308].includes(r.status)) {
+        const location=r.headers.get("location"); if(!location) return null;
+        const next=publicWebsiteUrl(new URL(location,safe.href).href); if(!next) return null;
+        safe=next; continue;
+      }
+      if(!r.ok) return null;
+      const type=String(r.headers.get("content-type")||"");
+      if(!type.includes("text/html")) return null;
+      return {url:safe.href,html:(await r.text()).slice(0,350000)};
+    }
+    return null;
+  } catch { return null; } finally { clearTimeout(timer); }
+}
+
+async function inspectBusinessProspect(seed = {}, verticals = []) {
+  const safe=publicWebsiteUrl(seed.url); if(!safe) return null;
+  const host=baseHost(safe.hostname);
+  if(/(yelp|angi|homeadvisor|thumbtack|bbb|facebook|linkedin|mapquest|yellowpages|forbes|wikipedia|reddit)\./i.test(host)) return null;
+
+  const first=await fetchPublicHtml(seed.url,4500); if(!first) return null;
+  let html=first.html, pageText=visiblePageText(html);
+  const combined=`${seed.title} ${seed.snippet} ${pageText.slice(0,12000)}`;
+  const vertical=verticals.find(v => new RegExp(v.replace(/\s+/g,"\\s+"),"i").test(combined));
+  if(!vertical) return null;
+
+  let email=extractPublicRoleEmail(html,new URL(first.url).hostname);
+  if(!email) {
+    const links=contactLinks(html,first.url);
+    const pages=await Promise.allSettled(links.map(link=>fetchPublicHtml(link,4500)));
+    for(const result of pages) {
+      if(result.status!=="fulfilled" || !result.value) continue;
+      const page=result.value;
+      pageText += " " + visiblePageText(page.html);
+      email=extractPublicRoleEmail(page.html,new URL(page.url).hostname) || email;
+      if(email) break;
+    }
+  }
+
+  const signals=prospectFitSignals(pageText);
+  const verified=Boolean(email && signals.length>=1);
+  const businessName=cleanText(seed.title).replace(/\s+[|–—-]\s+.*$/,"").slice(0,180) || host;
+  const score=Math.min(92,55 + (email?15:0) + Math.min(20,signals.length*5) + (signals.includes("urgent_lead_flow")?5:0));
+  return {
+    ...seed,
+    title:businessName,
+    url:first.url,
+    source:"business_website",
+    channel:"business_web",
+    signalType:"prospect",
+    buyerEmail:email,
+    fitSignals:signals,
+    prospecting:true,
+    prospectScore:score,
+    snippet:`Verified public business website for ${vertical}. Observable fit signals: ${signals.length?signals.join(", "):"none"}. No explicit purchase request was found.`,
+    verification:{status:verified?"VERIFIED_OPEN":"VERIFY",checkedAt:new Date().toISOString(),method:"public_business_website"},
+    qualification:verified?"PROSPECT_QUALIFIED":"PROSPECT_VERIFY"
+  };
+}
+
+async function enrichBusinessProspects(items = [], verticals = [], limit = 12) {
+  const seeds=[]; const seenHosts=new Set();
+  for(const seed of items) {
+    const safe=publicWebsiteUrl(seed.url); if(!safe) continue;
+    const host=baseHost(safe.hostname);
+    if(seenHosts.has(host)) continue;
+    seenHosts.add(host); seeds.push(seed);
+    if(seeds.length>=Math.max(limit+6,18)) break;
+  }
+
+  const out=[]; let cursor=0;
+  const worker=async()=>{
+    while(cursor<seeds.length && out.length<limit) {
+      const seed=seeds[cursor++];
+      const prospect=await inspectBusinessProspect(seed,verticals);
+      if(prospect) out.push(prospect);
+    }
+  };
+  await Promise.all(Array.from({length:Math.min(6,seeds.length)},()=>worker()));
+  return out.slice(0,limit);
+}
+
 export function buildDiscoveryQuerySpecs(request = "") {
   const goal = compactGoal(request, 220);
   const techTerms = "API integration automation SaaS AWS deployment backend database AI workflow bug fix";
@@ -104,6 +271,23 @@ export function buildDiscoveryQuerySpecs(request = "") {
   const offer = campaignField(request, "Offer");
   const campaignSpecific = Boolean(targetBuyer || offer);
   const broad = !campaignSpecific && broadOpportunityIntent(request);
+
+  if (campaignSpecific && homeServiceVerticals(targetBuyer).length) {
+    const verticals=homeServiceVerticals(targetBuyer);
+    return {
+      techIntent:false,
+      broad:false,
+      campaignSpecific:true,
+      prospecting:true,
+      verticals,
+      strategy:"home_service_business_prospecting",
+      specs: verticals.slice(0,5).map(vertical => ({
+        channel:"business_web",
+        signalType:"prospect",
+        q:`"${vertical}" company ("request service" OR "schedule service" OR "24/7" OR financing OR "areas we serve") ("contact us" OR contact OR schedule) -site:yelp.com -site:angi.com -site:homeadvisor.com -site:thumbtack.com -site:bbb.org -site:facebook.com -site:linkedin.com`
+      }))
+    };
+  }
 
   if (campaignSpecific) {
     const buyer = targetBuyer || "small business";
@@ -386,6 +570,26 @@ export async function discoverMarketEvidence(request, { count = 14 } = {}) {
       }
     }
     return collected.slice(start);
+  }
+
+  if (plan.prospecting) {
+    const raw=await collect(plan.specs,6);
+    const prospects=await enrichBusinessProspects(raw,plan.verticals||[],Math.max(count,12));
+    prospects.sort((a,b)=>(b.prospectScore||0)-(a.prospectScore||0));
+    const finalResults=prospects.slice(0,count);
+    return {
+      enabled:true,
+      provider,
+      strategy:plan.strategy,
+      prospecting:true,
+      queries,
+      results:finalResults,
+      qualifyingDemandCount:finalResults.filter(x=>x.qualification==="PROSPECT_QUALIFIED").length,
+      verifyDemandCount:finalResults.filter(x=>x.qualification==="PROSPECT_VERIFY").length,
+      rejectedCount,
+      rescueTriggered:false,
+      rescueResultCount:0
+    };
   }
 
   async function enrich(items, verificationLimit) {

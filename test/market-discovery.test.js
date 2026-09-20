@@ -50,3 +50,18 @@ test("accessible rescue avoids blocked marketplace-only dead end", () => {
   assert.ok(specs.some(x => x.channel === "public_rfp"));
   assert.ok(specs.every(x => !["upwork", "freelancer", "peopleperhour"].includes(x.channel)));
 });
+
+
+test("home-service campaign uses business prospecting mode", () => {
+  const plan = buildDiscoveryQuerySpecs([
+    "Find home-service companies that could use faster lead response.",
+    "Offer: AI lead-response and appointment-booking automation",
+    "Target buyer: HVAC, plumbing, electrical, roofing, landscaping and similar home-service businesses"
+  ].join("\n"));
+  assert.equal(plan.strategy, "home_service_business_prospecting");
+  assert.equal(plan.prospecting, true);
+  assert.ok(plan.verticals.includes("hvac"));
+  assert.ok(plan.specs.length >= 5);
+  assert.ok(plan.specs.every(x => x.channel === "business_web"));
+  assert.ok(plan.specs.every(x => x.signalType === "prospect"));
+});
