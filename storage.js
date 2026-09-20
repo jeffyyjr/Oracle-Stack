@@ -5,6 +5,8 @@ const { Pool } = pg;
 let pool = null;
 let enabled = false;
 
+function safeJson(value) { return JSON.stringify(value).replaceAll(String.fromCharCode(0), ""); }
+
 export function storageEnabled() { return enabled; }
 
 export async function initStorage() {
@@ -200,7 +202,7 @@ export async function saveArtifactBundle({ workspaceId, opportunity, status, man
       INSERT INTO oracle_artifacts (workspace_id,opportunity,status,manifest)
       VALUES ($1,$2,$3,$4::jsonb)
       ON CONFLICT (workspace_id) DO UPDATE SET opportunity=EXCLUDED.opportunity,status=EXCLUDED.status,manifest=EXCLUDED.manifest
-    `,[workspaceId,opportunity,status,JSON.stringify(manifest)]);
+    `,[workspaceId,opportunity,status,safeJson(manifest)]);
     for(const file of files) {
       await client.query(`
         INSERT INTO oracle_artifact_files (workspace_id,path,content,byte_size)
@@ -370,7 +372,7 @@ export async function upsertSalesLead(lead) {
       outreach_draft=CASE WHEN oracle_sales_leads.outreach_status='not_sent' THEN EXCLUDED.outreach_draft ELSE oracle_sales_leads.outreach_draft END,
       updated_at=NOW()
     RETURNING *
-  `,[lead.id,lead.campaignId,lead.name,lead.source,lead.sourceUrl,lead.buyerProblem,lead.buyerEmail||null,JSON.stringify(lead.evidence),lead.score,lead.stage,lead.outreachDraft,lead.estimatedValue,lead.estimatedMargin]);
+  `,[lead.id,lead.campaignId,lead.name,lead.source,lead.sourceUrl,lead.buyerProblem,lead.buyerEmail||null,safeJson(lead.evidence),lead.score,lead.stage,lead.outreachDraft,lead.estimatedValue,lead.estimatedMargin]);
   return result.rows[0];
 }
 
@@ -410,7 +412,7 @@ export async function ingestSalesReply({ classification, reply = {} }) {
       VALUES ($1,$2,$3,$4,$5::jsonb)
       ON CONFLICT (provider_message_id) DO NOTHING
       RETURNING provider_message_id
-    `,[classification.providerMessageId,classification.inReplyTo,classification.classification,classification.action,JSON.stringify(reply)]);
+    `,[classification.providerMessageId,classification.inReplyTo,classification.classification,classification.action,safeJson(reply)]);
     if(!claimed.rowCount){await client.query("ROLLBACK");return {accepted:true,duplicate:true,action:"ignore"};}
 
     const matched=await client.query(`
@@ -423,7 +425,7 @@ export async function ingestSalesReply({ classification, reply = {} }) {
     else if(!["contacted","replied"].includes(matched.rows[0].stage)) reason="lead_not_awaiting_reply";
     if(reason){
       await client.query("UPDATE oracle_sales_inbound_messages SET status='held',processed_at=NOW() WHERE provider_message_id=$1",[classification.providerMessageId]);
-      await client.query("INSERT INTO oracle_sales_events (event_type,detail) VALUES ('reply_unmatched',$1::jsonb)",[JSON.stringify({providerMessageId:classification.providerMessageId,inReplyTo:classification.inReplyTo,reason})]);
+      await client.query("INSERT INTO oracle_sales_events (event_type,detail) VALUES ('reply_unmatched',$1::jsonb)",[safeJson({providerMessageId:classification.providerMessageId,inReplyTo:classification.inReplyTo,reason})]);
       await client.query("COMMIT");
       return {accepted:false,action:"hold",reason};
     }
@@ -438,9 +440,9 @@ export async function ingestSalesReply({ classification, reply = {} }) {
       WHERE id=$1 RETURNING *
     `,[lead.id,plan.stage,suppressNote,proposal?.reply||null,proposal?.price??null,proposal?.currency||null,plan.proposalStatus]);
     const replyDetail={providerMessageId:classification.providerMessageId,inReplyTo:classification.inReplyTo,action:classification.action,proposalStatus:plan.proposalStatus};
-    await client.query("INSERT INTO oracle_sales_events (campaign_id,lead_id,event_type,detail) VALUES ($1,$2,$3,$4::jsonb)",[lead.campaign_id,lead.id,`reply_${classification.classification}`,JSON.stringify(replyDetail)]);
+    await client.query("INSERT INTO oracle_sales_events (campaign_id,lead_id,event_type,detail) VALUES ($1,$2,$3,$4::jsonb)",[lead.campaign_id,lead.id,`reply_${classification.classification}`,safeJson(replyDetail)]);
     if(plan.proposalStatus!=="none"){
-      await client.query("INSERT INTO oracle_sales_events (campaign_id,lead_id,event_type,detail) VALUES ($1,$2,$3,$4::jsonb)",[lead.campaign_id,lead.id,`proposal_${plan.proposalStatus}`,JSON.stringify({providerMessageId:classification.providerMessageId,price:proposal?.price??null,currency:proposal?.currency||lead.currency||null,reason:plan.proposal?.reason||null,boundary:plan.proposal?.boundary||null,autoSend:false})]);
+      await client.query("INSERT INTO oracle_sales_events (campaign_id,lead_id,event_type,detail) VALUES ($1,$2,$3,$4::jsonb)",[lead.campaign_id,lead.id,`proposal_${plan.proposalStatus}`,safeJson({providerMessageId:classification.providerMessageId,price:proposal?.price??null,currency:proposal?.currency||lead.currency||null,reason:plan.proposal?.reason||null,boundary:plan.proposal?.boundary||null,autoSend:false})]);
     }
     await client.query("UPDATE oracle_sales_inbound_messages SET campaign_id=$2,lead_id=$3,status='processed',processed_at=NOW() WHERE provider_message_id=$1",[classification.providerMessageId,lead.campaign_id,lead.id]);
     await client.query("COMMIT");
@@ -453,7 +455,7 @@ export async function ingestSalesReply({ classification, reply = {} }) {
 
 export async function recordSalesEvent({campaignId=null,leadId=null,eventType,detail={}}) {
   if (!enabled) return null;
-  const result=await pool.query("INSERT INTO oracle_sales_events (campaign_id,lead_id,event_type,detail) VALUES ($1,$2,$3,$4::jsonb) RETURNING *",[campaignId,leadId,eventType,JSON.stringify(detail)]);
+  const result=await pool.query("INSERT INTO oracle_sales_events (campaign_id,lead_id,event_type,detail) VALUES ($1,$2,$3,$4::jsonb) RETURNING *",[campaignId,leadId,eventType,safeJson(detail)]);
   return result.rows[0];
 }
 
