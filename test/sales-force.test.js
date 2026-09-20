@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { normalizeCampaign, scoreEvidence, evidenceToLead, normalizeDeliveryReceipt, nextStage, summarizePipeline, campaignEvidenceQualifies } from "../sales-force.js";
+import { normalizeCampaign, scoreEvidence, evidenceToLead, normalizeDeliveryReceipt, nextStage, summarizePipeline, campaignEvidenceQualifies, shouldReviveAutoClosedLead } from "../sales-force.js";
 
 test("campaign defaults to a safe recurring research loop", () => {
   const campaign = normalizeCampaign({ objective: "Find buyers with automation pain" });
@@ -132,4 +132,24 @@ test("verified marketplace buyer becomes a platform-native proposal", () => {
   assert.equal(lead.buyerEmail,null);
   assert.match(lead.outreachDraft,/working/i);
   assert.match(lead.outreachDraft,/lead intake/i);
+});
+
+
+test("only auto-closed uncontacted leads can revive after fresh qualification", () => {
+  const candidate={stage:"qualified"};
+  assert.equal(shouldReviveAutoClosedLead({
+    stage:"lost",outreach_status:"not_sent",notes:"Closed automatically: unrelated to current campaign target."
+  },candidate),true);
+
+  assert.equal(shouldReviveAutoClosedLead({
+    stage:"lost",outreach_status:"not_sent",notes:"Marked lost manually."
+  },candidate),false);
+
+  assert.equal(shouldReviveAutoClosedLead({
+    stage:"lost",outreach_status:"sent",notes:"Closed automatically: stale."
+  },candidate),false);
+
+  assert.equal(shouldReviveAutoClosedLead({
+    stage:"lost",outreach_status:"not_sent",notes:"Closed automatically: stale."
+  },{stage:"discovered"}),false);
 });

@@ -13,7 +13,7 @@ import { techHunterInstructions } from "./agents/tech-problem-hunter.js";
 import { techFixerInstructions } from "./agents/tech-fixer.js";
 import { dealQualifierInstructions } from "./agents/deal-qualifier.js";
 import { executionAgentInstructions } from "./agents/execution-agent.js";
-import { normalizeCampaign, evidenceToLead, campaignEvidenceRelevant, campaignEvidenceQualifies, nextStage, summarizePipeline } from "./sales-force.js";
+import { normalizeCampaign, evidenceToLead, campaignEvidenceRelevant, campaignEvidenceQualifies, shouldReviveAutoClosedLead, nextStage, summarizePipeline } from "./sales-force.js";
 import { resendOutreachConfigured, resendConfigurationStatus, sendResendOutreach } from "./resend-connector.js";
 import { gmailOutreachConfigured, gmailConfigurationStatus, sendGmailOutreach, pollGmailReplies, verifyGmailConnection } from "./gmail-connector.js";
 import { gmailBridgeConfigured, gmailBridgeStatus, sendGmailBridgeOutreach, verifyGmailBridgeConnection } from "./gmail-https-bridge.js";
@@ -562,6 +562,18 @@ async function runSalesCampaign(campaignRow,{manual=false}={}) {
       }
       const candidate=evidenceToLead(campaign,item);
       let lead=await upsertSalesLead(candidate);
+      if(shouldReviveAutoClosedLead(lead,candidate)) {
+        lead=await updateSalesLead(lead.id,{
+          stage:"qualified",
+          notes:`${lead.notes||""}\nReopened automatically: fresh verified buyer evidence now qualifies this opportunity.`.trim().slice(0,4000)
+        })||lead;
+        await recordSalesEvent({
+          campaignId:campaign.id,
+          leadId:lead.id,
+          eventType:"lead_reopened_verified_buyer",
+          detail:{name:lead.name||"",sourceUrl:lead.source_url||null,verification:lead.evidence?.verification?.status||null}
+        });
+      }
       if(lead.evidence?.signalType==="demand") buyerLeads++;
       if(lead.evidence?.signalType==="prospect") prospectLeads++;
       if(lead.stage==="qualified") {
