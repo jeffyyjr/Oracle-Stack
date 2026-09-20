@@ -79,7 +79,8 @@ async function ingestResendReply(req, res) {
   const inReplyTo = webhookHeader(email.headers, "in-reply-to")
     || text(email.in_reply_to, 512)
     || referencesFallback(webhookHeader(email.headers, "references"));
-  const bodyText = text(email.text || email.body || "", 8000);
+  const htmlFallback = String(email.html || "").replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  const bodyText = text(email.text || email.body || htmlFallback, 8000);
   const reply = {
     text: bodyText,
     messageId: text(email.message_id || event.data?.message_id || emailId, 240),
