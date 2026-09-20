@@ -102,6 +102,15 @@ export function campaignEvidenceRelevant(campaign = {}, item = {}) {
   return true;
 }
 
+function platformNativeChannel(item = {}) {
+  return ["upwork","freelancer","peopleperhour","reddit"].includes(String(item.channel || item.evidence?.channel || "").toLowerCase());
+}
+
+function platformName(item = {}) {
+  const channel=String(item.channel || item.evidence?.channel || "").toLowerCase();
+  return ({upwork:"Upwork",freelancer:"Freelancer",peopleperhour:"PeoplePerHour",reddit:"Reddit"})[channel] || "";
+}
+
 function explicitCommercialIntent(item) {
   const haystack = `${item.title || ""} ${item.snippet || ""}`.toLowerCase();
   return /(hiring|need (?:a|an|someone|help)|seeking (?:a|an|someone|provider|vendor|contractor|developer|agency)|looking for (?:someone|a vendor|an agency|a contractor|a developer|help with)|request for (?:proposal|quote)|\brfp\b|\brfq\b|budget|fixed.price|hourly|will pay|bounty|paid (?:project|work|gig|task|job))/i.test(haystack);
@@ -163,6 +172,9 @@ export function evidenceToLead(campaign, item) {
       buyerEmailRole: text(item.buyerEmailRole,80) || null,
       buyerEmailContext: text(item.buyerEmailContext,420) || null,
       verification: item.verification || null,
+      buyerPriority: item.buyerPriority === true || item.priorityBuyer === true,
+      outreachMethod: platformNativeChannel(item) ? "platform_native" : (explicitBuyerEmail(item) ? "direct_email" : "review"),
+      platform: platformName(item) || null,
       observedAt: new Date().toISOString()
     },
     score,
@@ -179,7 +191,17 @@ export function buildOutreachDraft(campaign, item) {
     const business = text(item.title || "your business",180);
     return `Hi — I came across ${business} while researching home-service companies. We help service teams respond to inbound leads, qualify them, book appointments, and follow up automatically. If improving lead response or booking is useful for your team, I can send a short plan showing how ${offer} could fit your current workflow. If not, no problem.`;
   }
-  const problem = text(item.snippet || item.title, 420);
+  const problem = text(item.snippet || item.title, 520);
+  if (platformNativeChannel(item)) {
+    const platform=platformName(item);
+    const hermes=/hermes/i.test(`${item.title||""} ${item.snippet||""}`);
+    const bilingual=/french|bilingual/i.test(`${item.title||""} ${item.snippet||""}`);
+    const caveats=[
+      hermes ? "I haven’t built this exact project in Hermes yet, so I’d map the existing agent/tool workflow into Hermes rather than pretend otherwise." : "",
+      bilingual ? "For the bilingual requirement, I’d build and test French/English conversation handling into the system; I would not claim personal French fluency." : ""
+    ].filter(Boolean).join(" ");
+    return `Hi — your ${platform} post is very close to a system I already have working: automated lead intake, qualification, appointment booking, follow-up, CRM/API-style handoffs, logging, and agent guardrails for home-service workflows. That means I would be adapting a working architecture instead of starting from a blank project. My first step would be to map your current lead sources, CRM/calendar, booking rules, and escalation boundaries, then connect the smallest end-to-end flow and test failure cases before expanding it. ${caveats} If useful, I can outline the architecture and first milestone against your exact post before we commit to the full build.`.replace(/\s+/g," ").trim();
+  }
   return `Hi — I saw your request about ${problem}. We may be able to help with ${offer}. If the need is still open, I can send a short plan with scope, timing, and a clear price. No pressure if it has already been handled.`;
 }
 
