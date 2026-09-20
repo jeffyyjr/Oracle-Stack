@@ -42,7 +42,10 @@ export function gmailConfigurationStatus() {
 
 function transporter() {
   return nodemailer.createTransport({
-    service: "gmail",
+    host: "smtp.gmail.com",
+    port: 587,
+    secure: false,
+    requireTLS: true,
     family: 4,
     connectionTimeout: 10000,
     greetingTimeout: 10000,
