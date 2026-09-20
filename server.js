@@ -477,7 +477,7 @@ async function runSalesCampaign(campaignRow,{manual=false}={}) {
     let irrelevantClosed=0;
     for (const lead of existing) {
       if (!["discovered","qualified","outreach_ready"].includes(lead.stage) || lead.outreach_status!=="not_sent") continue;
-      const qualifies=campaignEvidenceQualifies(campaign,{title:lead.name,snippet:lead.buyer_problem,url:lead.source_url,channel:lead.evidence?.channel,signalType:lead.evidence?.signalType,qualification:lead.evidence?.qualification,buyerEmail:lead.buyer_email,verification:lead.evidence?.verification,evidence:lead.evidence});
+      const qualifies=campaignEvidenceQualifies(campaign,{title:lead.name,snippet:lead.buyer_problem,url:lead.source_url,channel:lead.evidence?.channel,signalType:lead.evidence?.signalType,qualification:lead.evidence?.qualification,fitSignals:lead.evidence?.fitSignals,buyerEmail:lead.buyer_email,verification:lead.evidence?.verification,evidence:lead.evidence});
       if (qualifies) continue;
       await updateSalesLead(lead.id,{stage:"lost",notes:`${lead.notes||""}\nClosed automatically: unrelated to current campaign target.`.trim().slice(0,4000)});
       await recordSalesEvent({campaignId:campaign.id,leadId:lead.id,eventType:"lead_closed_irrelevant",detail:{name:lead.name||"",sourceUrl:lead.source_url||null}});
