@@ -43,6 +43,7 @@ export function gmailConfigurationStatus() {
 function transporter() {
   return nodemailer.createTransport({
     service: "gmail",
+    family: 4,
     connectionTimeout: 10000,
     greetingTimeout: 10000,
     socketTimeout: 15000,
