@@ -553,7 +553,7 @@ async function runSalesCampaign(campaignRow,{manual=false}={}) {
       irrelevantClosed++;
     }
     const evidence=await discoverMarketEvidence(query,{count:Math.max(campaign.maxLeadsPerRun*3,15)});
-    const created=[];let qualified=0,sent=0;
+    const created=[];let qualified=0,sent=0,platformProposalsReady=0,buyerLeads=0,prospectLeads=0;
     for(const item of evidence.results) {
       if (created.length >= campaign.maxLeadsPerRun) break;
       if (!campaignEvidenceRelevant(campaign,item)) {
@@ -562,12 +562,24 @@ async function runSalesCampaign(campaignRow,{manual=false}={}) {
       }
       const candidate=evidenceToLead(campaign,item);
       let lead=await upsertSalesLead(candidate);
+      if(lead.evidence?.signalType==="demand") buyerLeads++;
+      if(lead.evidence?.signalType==="prospect") prospectLeads++;
       if(lead.stage==="qualified") {
         qualified++;
         lead=await updateSalesLead(lead.id,{stage:"outreach_ready"})||lead;
         const isProspect=lead.evidence?.signalType==="prospect";
+        const platformNative=lead.evidence?.outreachMethod==="platform_native";
         const prospectAutoEnabled=String(process.env.SALES_PROSPECTING_AUTO_SEND||"false").toLowerCase()==="true";
-        if(campaign.outreachMode==="auto"&&campaign.authorizedAutoOutreach&&salesOutreachConfigured()&&lead.outreach_status==="not_sent"&&(!isProspect||prospectAutoEnabled)) {
+
+        if(platformNative) {
+          platformProposalsReady++;
+          await recordSalesEvent({
+            campaignId:campaign.id,
+            leadId:lead.id,
+            eventType:"platform_proposal_ready",
+            detail:{platform:lead.evidence?.platform||null,sourceUrl:lead.source_url||null,autoSend:false}
+          });
+        } else if(campaign.outreachMode==="auto"&&campaign.authorizedAutoOutreach&&salesOutreachConfigured()&&lead.outreach_status==="not_sent"&&(!isProspect||prospectAutoEnabled)) {
           try{const delivery=await sendSalesOutreach(campaign,lead);if(delivery.sent){sent++;lead=delivery.lead;}}
           catch(error){await recordSalesEvent({campaignId:campaign.id,leadId:lead.id,eventType:"outreach_failed",detail:{error:error.message}});}
         } else if (isProspect && campaign.outreachMode==="auto" && campaign.authorizedAutoOutreach && !prospectAutoEnabled) {
@@ -577,7 +589,7 @@ async function runSalesCampaign(campaignRow,{manual=false}={}) {
       created.push(lead);
     }
     await markSalesCampaignRun(campaign.id,{ok:true});
-    const summary={evidenceFound:evidence.results.length,rejected:evidence.rejectedCount||0,processed:created.length,qualified,outreachSent:sent,irrelevantClosed,discoveryProvider:evidence.provider||null,strategy:evidence.strategy||null,prospecting:evidence.prospecting===true};
+    const summary={evidenceFound:evidence.results.length,rejected:evidence.rejectedCount||0,processed:created.length,qualified,outreachSent:sent,platformProposalsReady,buyerLeads,prospectLeads,irrelevantClosed,discoveryProvider:evidence.provider||null,strategy:evidence.strategy||null,buyerFirst:evidence.buyerFirst===true,prospecting:evidence.prospecting===true};
     await recordSalesEvent({campaignId:campaign.id,eventType:"run_completed",detail:summary});
     return {ok:true,summary,leads:created};
   } catch(error) {
