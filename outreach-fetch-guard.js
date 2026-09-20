@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import express from "express";
 import { classifyInboundReply } from "./sales-force.js";
-import { listSalesLeads, listSalesEvents, updateSalesLead, recordSalesEvent } from "./storage.js";
+import { ingestSalesReply } from "./storage.js";
 
 const nativeFetch = globalThis.fetch.bind(globalThis);
 const nativeJson = express.json.bind(express);
@@ -41,27 +41,8 @@ async function ingestInboundReply(req, res) {
   const body = req.body?.data && typeof req.body.data === "object" ? req.body.data : (req.body || {});
   const classification = classifyInboundReply(body);
   if (!classification.accepted) return res.status(202).json({ accepted: false, action: "hold", reason: classification.reason });
-
-  const events = await listSalesEvents(null, 500);
-  if (events.some(event => String(event.detail?.providerMessageId || "") === classification.providerMessageId)) {
-    return res.status(200).json({ accepted: true, duplicate: true, action: "ignore" });
-  }
-
-  const leads = await listSalesLeads({ limit: 500 });
-  const correlation = correlateInboundReply(leads, classification.inReplyTo);
-  if (!correlation.matched) {
-    await recordSalesEvent({ eventType: "reply_unmatched", detail: { providerMessageId: classification.providerMessageId, inReplyTo: classification.inReplyTo, reason: correlation.reason } });
-    return res.status(202).json({ accepted: false, action: "hold", reason: correlation.reason });
-  }
-
-  const lead = correlation.lead;
-  let stage = lead.stage;
-  if (classification.action === "advance") stage = "replied";
-  if (["close", "suppress"].includes(classification.action)) stage = "lost";
-  const notes = classification.action === "suppress" ? `${lead.notes || ""}\nInbound opt-out received; suppress future outreach.`.trim().slice(0, 4000) : undefined;
-  const updated = await updateSalesLead(lead.id, { stage, notes });
-  await recordSalesEvent({ campaignId: lead.campaign_id, leadId: lead.id, eventType: `reply_${classification.classification}`, detail: { providerMessageId: classification.providerMessageId, inReplyTo: classification.inReplyTo, action: classification.action } });
-  return res.status(200).json({ accepted: true, classification: classification.classification, action: classification.action, leadId: lead.id, stage: updated.stage });
+  const result=await ingestSalesReply({classification,reply:body});
+  return res.status(result.accepted?200:202).json(result);
 }
 
 export function installInboundReplyGate() {

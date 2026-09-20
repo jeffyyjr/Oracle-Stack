@@ -11,8 +11,18 @@ function text(value, max = 2000) {
 }
 
 function money(value) {
+  if (value === null || value === undefined || value === "") return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed * 100) / 100 : null;
+}
+
+export function extractBuyerBudget(input = {}) {
+  const explicit = money(input.buyerBudget ?? input.budget ?? input.amount);
+  if (explicit !== null) return explicit;
+  const body = text(input.text || input.body || input.message, 8000);
+  const match = body.match(/(?:budget(?:\s+is|\s+of)?|up\s+to|can\s+(?:do|pay)|pay|spend|for)\s*(?:is\s*)?(?:usd\s*)?\$?\s*([0-9][0-9,]*(?:\.\d{1,2})?)/i)
+    || body.match(/(?:usd\s*|\$\s*)([0-9][0-9,]*(?:\.\d{1,2})?)/i);
+  return match ? money(match[1].replaceAll(",", "")) : null;
 }
 
 export function normalizeCampaign(input = {}) {
@@ -22,6 +32,12 @@ export function normalizeCampaign(input = {}) {
   const cadenceMinutes = Math.max(60, Math.min(10080, Number(input.cadenceMinutes) || 1440));
   const dailyRunLimit = Math.max(1, Math.min(24, Number(input.dailyRunLimit) || 1));
   const minimumLeadScore = Math.max(0, Math.min(100, Number(input.minimumLeadScore) || 55));
+  const minimumPrice = money(input.minimumPrice);
+  const targetPrice = money(input.targetPrice);
+  const maxDiscountPercent = Math.max(0, Math.min(50, Number(input.maxDiscountPercent) || 0));
+  const currency = text(input.currency || "USD", 8).toUpperCase();
+  if ((minimumPrice === null) !== (targetPrice === null)) throw new Error("Minimum and target price must be set together.");
+  if (minimumPrice !== null && targetPrice < minimumPrice) throw new Error("Target price must be at least the minimum price.");
   return {
     id: crypto.randomUUID(),
     name: text(input.name || objective, 120),
@@ -34,6 +50,10 @@ export function normalizeCampaign(input = {}) {
     cadenceMinutes,
     dailyRunLimit,
     minimumLeadScore,
+    minimumPrice,
+    targetPrice,
+    maxDiscountPercent,
+    currency,
     maxLeadsPerRun: Math.max(1, Math.min(25, Number(input.maxLeadsPerRun) || 8)),
     authorizedAutoOutreach: outreachMode === "auto" && input.authorizedAutoOutreach === true
   };
@@ -157,6 +177,27 @@ export function buildBoundedReply(input = {}) {
     reply,
     boundary: { minimumPrice: effectiveFloor, targetPrice: target, maxDiscountPercent }
   };
+}
+
+export function planInboundReply({ classification = {}, campaign = {}, reply = {} } = {}) {
+  let stage = "replied";
+  if (["close", "suppress"].includes(classification.action)) stage = "lost";
+  if (classification.classification !== "positive") {
+    return { stage, proposal: null, proposalStatus: classification.action === "hold" ? "review" : "none" };
+  }
+  const proposal = buildBoundedReply({
+    classification,
+    offer: campaign.offer,
+    scope: reply.scope || campaign.offer,
+    minimumPrice: campaign.minimum_price ?? campaign.minimumPrice,
+    targetPrice: campaign.target_price ?? campaign.targetPrice,
+    maxDiscountPercent: campaign.max_discount_percent ?? campaign.maxDiscountPercent,
+    currency: campaign.currency,
+    buyerBudget: extractBuyerBudget(reply)
+  });
+  if (proposal.allowed) return { stage: "proposal", proposal, proposalStatus: "drafted" };
+  if (proposal.action === "escalate") return { stage: "replied", proposal, proposalStatus: "escalated" };
+  return { stage: "replied", proposal, proposalStatus: "held" };
 }
 
 export function nextStage(current, requested) {

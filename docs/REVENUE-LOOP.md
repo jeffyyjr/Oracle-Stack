@@ -25,7 +25,10 @@ Oracle Stack is evolving from a model-routing layer into an autonomous opportuni
 - Demand-first discovery and lead scoring.
 - Owner command center at `/sales.html`.
 - Optional signed outreach webhook, used only after campaign-level authorization.
+- Authenticated inbound reply correlation with global provider-message deduplication.
+- Transactional reply processing: classification, proposal persistence and pipeline movement either commit together or roll back together.
+- Campaign-level minimum/target prices and discount limits; below-floor offers escalate and proposals remain unsent drafts.
 
 ## Next build
 
-Connect an approved outreach provider, ingest replies and automate proposal handoffs. Then use real conversion and margin outcomes—not activity volume—to reprioritize campaign types.
+Connect an approved outreach provider and add an owner approval/send handoff for saved proposal drafts. Then use real conversion and margin outcomes—not activity volume—to reprioritize campaign types.

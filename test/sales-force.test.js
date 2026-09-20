@@ -8,6 +8,17 @@ test("campaign defaults to a safe recurring research loop", () => {
   assert.equal(campaign.outreachMode, "draft");
   assert.equal(campaign.authorizedAutoOutreach, false);
   assert.equal(campaign.dailyRunLimit, 1);
+  assert.equal(campaign.minimumPrice, null);
+  assert.equal(campaign.targetPrice, null);
+});
+
+test("campaign validates bounded proposal pricing", () => {
+  const campaign = normalizeCampaign({ objective: "Sell automation", minimumPrice: 500, targetPrice: 1000, maxDiscountPercent: 20 });
+  assert.equal(campaign.minimumPrice, 500);
+  assert.equal(campaign.targetPrice, 1000);
+  assert.equal(campaign.maxDiscountPercent, 20);
+  assert.throws(() => normalizeCampaign({ objective: "Bad bounds", minimumPrice: 1000, targetPrice: 500 }), /Target price/);
+  assert.throws(() => normalizeCampaign({ objective: "Half bounds", minimumPrice: 500 }), /set together/);
 });
 
 test("verified commercial demand qualifies above a generic page", () => {

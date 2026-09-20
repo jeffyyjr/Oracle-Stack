@@ -12,7 +12,9 @@ Each campaign has a mission, optional offer and target buyer, lead threshold, ru
 2. Rejects weak/closed signals and scores evidence.
 3. Stores qualified leads and tailored outreach drafts.
 4. Sends outreach only when the campaign explicitly authorizes auto-outreach and `SALES_OUTREACH_WEBHOOK_URL` is configured.
-5. Tracks contacted, replied, proposal, won and lost stages plus actual revenue and margin.
+5. Correlates signed buyer replies to the exact outbound message, rejects duplicates globally, and atomically stores reply/proposal/pipeline changes.
+6. Drafts proposals only inside campaign price floors, targets and discount limits; below-floor budgets are escalated and drafts are never auto-sent.
+7. Tracks contacted, replied, proposal, won and lost stages plus actual revenue and margin.
 
 Campaigns can be paused globally with `SALES_FORCE_ENABLED=false` or individually from the dashboard. Payments, purchases and contracts are never executed by the campaign loop.
 
@@ -123,4 +125,4 @@ Set `ORACLE_BENCHMARK_URL` to benchmark a deployed instance instead of localhost
 
 Oracle Stack is not another model picker or prompt enhancer. The product is the automatic sales force: Oracle is the brain, and Opportunity Finder, qualification, Buyer Matcher, outreach and Deal Orchestrator are the workforce. Model routing remains supporting infrastructure.
 
-Next milestones: connect approved outreach channels, ingest reply events, automate proposal drafting/handoffs, and train campaign prioritization on real conversion, revenue and margin outcomes.
+Next milestones: connect an approved live outreach channel, add an owner approval/send handoff for saved proposal drafts, and train campaign prioritization on real conversion, revenue and margin outcomes.

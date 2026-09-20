@@ -30,6 +30,13 @@ Sales-force surfaces:
 - `POST /api/sales/campaigns/:id/run` — run immediately
 - `POST /api/sales/leads/:id/send` — authorized connector handoff
 - `POST /api/sales/leads/:id/outcome` — advance and record outcomes
+- `POST /api/sales/inbound` — authenticated reply ingestion with exact outbound correlation and global idempotency
+
+Reply/proposal state:
+- Campaigns may define minimum price, target price, maximum discount and currency.
+- Verified positive replies create a persisted bounded proposal draft and advance the lead to `proposal` in one transaction.
+- Missing buyer budgets use the campaign target; below-floor budgets escalate; missing commercial boundaries hold for review.
+- Proposal drafts always remain `autoSend:false`. Negative replies and opt-outs close the lead; opt-outs also add a suppression note.
 
 Documented specialist domains: Business, Research, Writing, Coding, Career, General.
 
@@ -55,8 +62,9 @@ For a new Render build, verify without paid inference:
 A successful build alone is not proof that the live service is correct.
 
 ## Current priorities
-- Deploy and verify the sales-force database migration and dashboard without running paid benchmarks.
+- Deploy and verify the transactional inbound/proposal migration without running paid benchmarks.
 - Configure a compliant outreach connector before expecting automatic messages to leave Oracle.
+- Add an explicit owner approval/send handoff for persisted proposal drafts.
 - Run a tightly capped first campaign and inspect evidence quality, qualified leads, replies, wins and margin.
 - Teach prioritization from actual deal outcomes; do not optimize for raw lead volume.
 
