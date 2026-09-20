@@ -384,8 +384,11 @@ async function cleanupIrrelevantUncontactedLeads() {
       const qualifies = campaignEvidenceQualifies(campaign,{
         title:lead.name,
         snippet:lead.buyer_problem,
+        url:lead.source_url,
         channel:lead.evidence?.channel,
         signalType:lead.evidence?.signalType,
+        qualification:lead.evidence?.qualification,
+        buyerEmail:lead.buyer_email,
         verification:lead.evidence?.verification,
         evidence:lead.evidence
       });
@@ -474,7 +477,7 @@ async function runSalesCampaign(campaignRow,{manual=false}={}) {
     let irrelevantClosed=0;
     for (const lead of existing) {
       if (!["discovered","qualified","outreach_ready"].includes(lead.stage) || lead.outreach_status!=="not_sent") continue;
-      const qualifies=campaignEvidenceQualifies(campaign,{title:lead.name,snippet:lead.buyer_problem,channel:lead.evidence?.channel,signalType:lead.evidence?.signalType,verification:lead.evidence?.verification,evidence:lead.evidence});
+      const qualifies=campaignEvidenceQualifies(campaign,{title:lead.name,snippet:lead.buyer_problem,url:lead.source_url,channel:lead.evidence?.channel,signalType:lead.evidence?.signalType,qualification:lead.evidence?.qualification,buyerEmail:lead.buyer_email,verification:lead.evidence?.verification,evidence:lead.evidence});
       if (qualifies) continue;
       await updateSalesLead(lead.id,{stage:"lost",notes:`${lead.notes||""}\nClosed automatically: unrelated to current campaign target.`.trim().slice(0,4000)});
       await recordSalesEvent({campaignId:campaign.id,leadId:lead.id,eventType:"lead_closed_irrelevant",detail:{name:lead.name||"",sourceUrl:lead.source_url||null}});
@@ -493,15 +496,19 @@ async function runSalesCampaign(campaignRow,{manual=false}={}) {
       if(lead.stage==="qualified") {
         qualified++;
         lead=await updateSalesLead(lead.id,{stage:"outreach_ready"})||lead;
-        if(campaign.outreachMode==="auto"&&campaign.authorizedAutoOutreach&&salesOutreachConfigured()&&lead.outreach_status==="not_sent") {
+        const isProspect=lead.evidence?.signalType==="prospect";
+        const prospectAutoEnabled=String(process.env.SALES_PROSPECTING_AUTO_SEND||"false").toLowerCase()==="true";
+        if(campaign.outreachMode==="auto"&&campaign.authorizedAutoOutreach&&salesOutreachConfigured()&&lead.outreach_status==="not_sent"&&(!isProspect||prospectAutoEnabled)) {
           try{const delivery=await sendSalesOutreach(campaign,lead);if(delivery.sent){sent++;lead=delivery.lead;}}
           catch(error){await recordSalesEvent({campaignId:campaign.id,leadId:lead.id,eventType:"outreach_failed",detail:{error:error.message}});}
+        } else if (isProspect && campaign.outreachMode==="auto" && campaign.authorizedAutoOutreach && !prospectAutoEnabled) {
+          await recordSalesEvent({campaignId:campaign.id,leadId:lead.id,eventType:"prospect_outreach_held_for_validation",detail:{reason:"SALES_PROSPECTING_AUTO_SEND is not enabled"}});
         }
       }
       created.push(lead);
     }
     await markSalesCampaignRun(campaign.id,{ok:true});
-    const summary={evidenceFound:evidence.results.length,rejected:evidence.rejectedCount||0,processed:created.length,qualified,outreachSent:sent,irrelevantClosed,discoveryProvider:evidence.provider||null};
+    const summary={evidenceFound:evidence.results.length,rejected:evidence.rejectedCount||0,processed:created.length,qualified,outreachSent:sent,irrelevantClosed,discoveryProvider:evidence.provider||null,strategy:evidence.strategy||null,prospecting:evidence.prospecting===true};
     await recordSalesEvent({campaignId:campaign.id,eventType:"run_completed",detail:summary});
     return {ok:true,summary,leads:created};
   } catch(error) {
