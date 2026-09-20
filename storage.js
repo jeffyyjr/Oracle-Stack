@@ -1,4 +1,5 @@
 import pg from "pg";
+import { planInboundReply } from "./sales-force.js";
 
 const { Pool } = pg;
 let pool = null;
@@ -77,11 +78,17 @@ export async function initStorage() {
       authorized_auto_outreach BOOLEAN NOT NULL DEFAULT FALSE,
       cadence_minutes INTEGER NOT NULL DEFAULT 1440, daily_run_limit INTEGER NOT NULL DEFAULT 1,
       minimum_lead_score INTEGER NOT NULL DEFAULT 55, max_leads_per_run INTEGER NOT NULL DEFAULT 8,
+      minimum_price DOUBLE PRECISION, target_price DOUBLE PRECISION,
+      max_discount_percent DOUBLE PRECISION NOT NULL DEFAULT 0, currency TEXT NOT NULL DEFAULT 'USD',
       runs_today INTEGER NOT NULL DEFAULT 0, runs_date DATE NOT NULL DEFAULT CURRENT_DATE,
       next_run_at TIMESTAMPTZ, last_run_at TIMESTAMPTZ, last_error TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS oracle_sales_campaigns_due_idx ON oracle_sales_campaigns(status,next_run_at);
+    ALTER TABLE oracle_sales_campaigns ADD COLUMN IF NOT EXISTS minimum_price DOUBLE PRECISION;
+    ALTER TABLE oracle_sales_campaigns ADD COLUMN IF NOT EXISTS target_price DOUBLE PRECISION;
+    ALTER TABLE oracle_sales_campaigns ADD COLUMN IF NOT EXISTS max_discount_percent DOUBLE PRECISION NOT NULL DEFAULT 0;
+    ALTER TABLE oracle_sales_campaigns ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'USD';
     CREATE TABLE IF NOT EXISTS oracle_sales_leads (
       id UUID PRIMARY KEY, campaign_id UUID NOT NULL REFERENCES oracle_sales_campaigns(id) ON DELETE CASCADE,
       name TEXT NOT NULL, source TEXT, source_url TEXT NOT NULL, buyer_problem TEXT,
@@ -90,11 +97,17 @@ export async function initStorage() {
       outreach_status TEXT NOT NULL DEFAULT 'not_sent', external_message_id TEXT,
       estimated_value DOUBLE PRECISION, estimated_margin DOUBLE PRECISION,
       actual_revenue DOUBLE PRECISION, actual_margin DOUBLE PRECISION, notes TEXT NOT NULL DEFAULT '',
+      proposal_draft TEXT NOT NULL DEFAULT '', proposal_price DOUBLE PRECISION,
+      proposal_currency TEXT, proposal_status TEXT NOT NULL DEFAULT 'none',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE(campaign_id,source_url)
     );
     CREATE INDEX IF NOT EXISTS oracle_sales_leads_campaign_idx ON oracle_sales_leads(campaign_id,created_at DESC);
     CREATE INDEX IF NOT EXISTS oracle_sales_leads_stage_idx ON oracle_sales_leads(stage,updated_at DESC);
+    ALTER TABLE oracle_sales_leads ADD COLUMN IF NOT EXISTS proposal_draft TEXT NOT NULL DEFAULT '';
+    ALTER TABLE oracle_sales_leads ADD COLUMN IF NOT EXISTS proposal_price DOUBLE PRECISION;
+    ALTER TABLE oracle_sales_leads ADD COLUMN IF NOT EXISTS proposal_currency TEXT;
+    ALTER TABLE oracle_sales_leads ADD COLUMN IF NOT EXISTS proposal_status TEXT NOT NULL DEFAULT 'none';
     CREATE TABLE IF NOT EXISTS oracle_sales_events (
       id BIGSERIAL PRIMARY KEY, campaign_id UUID REFERENCES oracle_sales_campaigns(id) ON DELETE CASCADE,
       lead_id UUID REFERENCES oracle_sales_leads(id) ON DELETE CASCADE,
@@ -102,6 +115,15 @@ export async function initStorage() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS oracle_sales_events_campaign_idx ON oracle_sales_events(campaign_id,created_at DESC);
+    CREATE TABLE IF NOT EXISTS oracle_sales_inbound_messages (
+      provider_message_id TEXT PRIMARY KEY, in_reply_to TEXT NOT NULL,
+      campaign_id UUID REFERENCES oracle_sales_campaigns(id) ON DELETE SET NULL,
+      lead_id UUID REFERENCES oracle_sales_leads(id) ON DELETE SET NULL,
+      classification TEXT NOT NULL, action TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'received',
+      payload JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      processed_at TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS oracle_sales_inbound_reply_to_idx ON oracle_sales_inbound_messages(in_reply_to);
   `);
   enabled = true;
   return { enabled: true };
@@ -279,9 +301,9 @@ export async function createSalesCampaign(campaign) {
   if (!enabled) throw new Error("Sales force storage requires DATABASE_URL.");
   const result=await pool.query(`
     INSERT INTO oracle_sales_campaigns
-      (id,name,objective,offer,target_buyer,constraints_text,status,outreach_mode,authorized_auto_outreach,cadence_minutes,daily_run_limit,minimum_lead_score,max_leads_per_run,next_run_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW()) RETURNING *
-  `,[campaign.id,campaign.name,campaign.objective,campaign.offer,campaign.targetBuyer,campaign.constraints,campaign.status,campaign.outreachMode,campaign.authorizedAutoOutreach,campaign.cadenceMinutes,campaign.dailyRunLimit,campaign.minimumLeadScore,campaign.maxLeadsPerRun]);
+      (id,name,objective,offer,target_buyer,constraints_text,status,outreach_mode,authorized_auto_outreach,cadence_minutes,daily_run_limit,minimum_lead_score,max_leads_per_run,minimum_price,target_price,max_discount_percent,currency,next_run_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW()) RETURNING *
+  `,[campaign.id,campaign.name,campaign.objective,campaign.offer,campaign.targetBuyer,campaign.constraints,campaign.status,campaign.outreachMode,campaign.authorizedAutoOutreach,campaign.cadenceMinutes,campaign.dailyRunLimit,campaign.minimumLeadScore,campaign.maxLeadsPerRun,campaign.minimumPrice,campaign.targetPrice,campaign.maxDiscountPercent,campaign.currency]);
   await recordSalesEvent({campaignId:campaign.id,eventType:"campaign_created",detail:{outreachMode:campaign.outreachMode}});
   return result.rows[0];
 }
@@ -374,6 +396,58 @@ export async function updateSalesLead(id,patch={}) {
     actual_revenue=COALESCE($7,actual_revenue),actual_margin=COALESCE($8,actual_margin),notes=COALESCE($9,notes),updated_at=NOW()
     WHERE id=$1 RETURNING *`,[id,patch.stage||null,patch.outreachStatus||null,patch.externalMessageId||null,patch.estimatedValue??null,patch.estimatedMargin??null,patch.actualRevenue??null,patch.actualMargin??null,patch.notes??null]);
   return result.rows[0]||null;
+}
+
+export async function ingestSalesReply({ classification, reply = {} }) {
+  if (!enabled) throw new Error("Sales force storage is unavailable.");
+  const client=await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const claimed=await client.query(`
+      INSERT INTO oracle_sales_inbound_messages
+        (provider_message_id,in_reply_to,classification,action,payload)
+      VALUES ($1,$2,$3,$4,$5::jsonb)
+      ON CONFLICT (provider_message_id) DO NOTHING
+      RETURNING provider_message_id
+    `,[classification.providerMessageId,classification.inReplyTo,classification.classification,classification.action,JSON.stringify(reply)]);
+    if(!claimed.rowCount){await client.query("ROLLBACK");return {accepted:true,duplicate:true,action:"ignore"};}
+
+    const matched=await client.query(`
+      SELECT l.*,c.offer,c.minimum_price,c.target_price,c.max_discount_percent,c.currency
+      FROM oracle_sales_leads l JOIN oracle_sales_campaigns c ON c.id=l.campaign_id
+      WHERE l.external_message_id=$1 FOR UPDATE OF l
+    `,[classification.inReplyTo]);
+    let reason=null;
+    if(matched.rowCount!==1) reason=matched.rowCount?"ambiguous_outbound_message":"unknown_outbound_message";
+    else if(!["contacted","replied"].includes(matched.rows[0].stage)) reason="lead_not_awaiting_reply";
+    if(reason){
+      await client.query("UPDATE oracle_sales_inbound_messages SET status='held',processed_at=NOW() WHERE provider_message_id=$1",[classification.providerMessageId]);
+      await client.query("INSERT INTO oracle_sales_events (event_type,detail) VALUES ('reply_unmatched',$1::jsonb)",[JSON.stringify({providerMessageId:classification.providerMessageId,inReplyTo:classification.inReplyTo,reason})]);
+      await client.query("COMMIT");
+      return {accepted:false,action:"hold",reason};
+    }
+
+    const lead=matched.rows[0];
+    const plan=planInboundReply({classification,campaign:lead,reply});
+    const suppressNote=classification.action==="suppress"?`${lead.notes||""}\nInbound opt-out received; suppress future outreach.`.trim().slice(0,4000):lead.notes;
+    const proposal=plan.proposal?.allowed?plan.proposal:null;
+    const updated=await client.query(`UPDATE oracle_sales_leads SET
+      stage=$2,notes=$3,proposal_draft=COALESCE($4,proposal_draft),proposal_price=COALESCE($5,proposal_price),
+      proposal_currency=COALESCE($6,proposal_currency),proposal_status=$7,updated_at=NOW()
+      WHERE id=$1 RETURNING *
+    `,[lead.id,plan.stage,suppressNote,proposal?.reply||null,proposal?.price??null,proposal?.currency||null,plan.proposalStatus]);
+    const replyDetail={providerMessageId:classification.providerMessageId,inReplyTo:classification.inReplyTo,action:classification.action,proposalStatus:plan.proposalStatus};
+    await client.query("INSERT INTO oracle_sales_events (campaign_id,lead_id,event_type,detail) VALUES ($1,$2,$3,$4::jsonb)",[lead.campaign_id,lead.id,`reply_${classification.classification}`,JSON.stringify(replyDetail)]);
+    if(plan.proposalStatus!=="none"){
+      await client.query("INSERT INTO oracle_sales_events (campaign_id,lead_id,event_type,detail) VALUES ($1,$2,$3,$4::jsonb)",[lead.campaign_id,lead.id,`proposal_${plan.proposalStatus}`,JSON.stringify({providerMessageId:classification.providerMessageId,price:proposal?.price??null,currency:proposal?.currency||lead.currency||null,reason:plan.proposal?.reason||null,boundary:plan.proposal?.boundary||null,autoSend:false})]);
+    }
+    await client.query("UPDATE oracle_sales_inbound_messages SET campaign_id=$2,lead_id=$3,status='processed',processed_at=NOW() WHERE provider_message_id=$1",[classification.providerMessageId,lead.campaign_id,lead.id]);
+    await client.query("COMMIT");
+    return {accepted:true,classification:classification.classification,action:classification.action,leadId:lead.id,stage:updated.rows[0].stage,proposalStatus:plan.proposalStatus,proposal:proposal?{price:proposal.price,currency:proposal.currency,autoSend:false}:null};
+  } catch(error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {client.release();}
 }
 
 export async function recordSalesEvent({campaignId=null,leadId=null,eventType,detail={}}) {

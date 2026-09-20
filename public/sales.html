@@ -36,11 +36,13 @@
           <label>Campaign name<input name="name" maxlength="120" placeholder="No-inventory opportunity hunt" /></label>
           <label>Mission<textarea name="objective" maxlength="1200" required placeholder="Find legitimate, low-capital opportunities with current buyer demand and a clear path to a profitable sale."></textarea></label>
           <label>What we can sell<textarea name="offer" maxlength="1000" placeholder="Leave blank if Oracle should discover the offer."></textarea></label>
+          <div class="two-col"><label>Minimum price<input name="minimumPrice" type="number" min="0" step="0.01" placeholder="500" /></label><label>Target price<input name="targetPrice" type="number" min="0" step="0.01" placeholder="1000" /></label></div>
+          <div class="two-col"><label>Maximum discount %<input name="maxDiscountPercent" type="number" min="0" max="50" step="0.1" value="0" /></label><label>Currency<input name="currency" maxlength="8" value="USD" /></label></div>
           <div class="two-col"><label>Target buyer<input name="targetBuyer" placeholder="Businesses with urgent automation pain" /></label><label>Minimum score<input name="minimumLeadScore" type="number" min="0" max="100" value="55" /></label></div>
           <label>Constraints<textarea name="constraints" maxlength="1200" placeholder="No inventory, low upfront cost, legal and platform-compliant."></textarea></label>
           <div class="two-col"><label>Run cadence<select name="cadenceMinutes"><option value="1440">Daily</option><option value="720">Twice daily</option><option value="10080">Weekly</option></select></label><label>Leads per run<input name="maxLeadsPerRun" type="number" min="1" max="25" value="8" /></label></div>
           <label class="check-row"><input name="autoOutreach" type="checkbox" /> Automatically send qualified outreach through the configured connector</label>
-          <p class="form-note">Discovery and drafting work automatically. Outreach sends only when this box is authorized and a connector is configured. Payments and contracts stay outside automation.</p>
+          <p class="form-note">Set both price fields to let Oracle draft bounded proposals from verified positive replies. Drafts are never auto-sent. Outreach sends only when this box is authorized and a connector is configured. Payments and contracts stay outside automation.</p>
           <button class="primary-btn" type="submit">Launch campaign</button><p id="campaign-status" class="form-status"></p>
         </form>
         <section class="card campaign-list-card">
