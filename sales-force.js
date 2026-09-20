@@ -161,6 +161,9 @@ export function evidenceToLead(campaign, item) {
       prospecting: item.prospecting === true,
       fitSignals: Array.isArray(item.fitSignals) ? item.fitSignals.slice(0,12) : [],
       verification: item.verification || null,
+      qualification: item.qualification || null,
+      fitSignals: Array.isArray(item.fitSignals) ? item.fitSignals : [],
+      prospecting: item.prospecting === true,
       observedAt: new Date().toISOString()
     },
     score,
