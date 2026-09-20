@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { normalizeCampaign, scoreEvidence, evidenceToLead, nextStage, summarizePipeline } from "../sales-force.js";
+import { normalizeCampaign, scoreEvidence, evidenceToLead, normalizeDeliveryReceipt, nextStage, summarizePipeline } from "../sales-force.js";
 
 test("campaign defaults to a safe recurring research loop", () => {
   const campaign = normalizeCampaign({ objective: "Find buyers with automation pain" });
@@ -22,6 +22,14 @@ test("lead creation drafts outreach only for qualified evidence", () => {
   const lead = evidenceToLead(campaign, { signalType:"demand", title:"Need API help", snippet:"We need someone to repair our integration", url:"https://example.com/projects/1", verification:{status:"VERIFIED_OPEN"} });
   assert.equal(lead.stage, "qualified");
   assert.match(lead.outreachDraft, /tested API integration/);
+});
+
+test("delivery receipts require explicit acceptance and a provider message id", () => {
+  assert.deepEqual(normalizeDeliveryReceipt({}), { accepted:false, messageId:null, status:"unconfirmed" });
+  assert.equal(normalizeDeliveryReceipt({ status:"queued", id:"q1" }).accepted, false);
+  assert.equal(normalizeDeliveryReceipt({ accepted:true }).accepted, false);
+  assert.deepEqual(normalizeDeliveryReceipt({ accepted:true, messageId:"m1" }), { accepted:true, messageId:"m1", status:"accepted" });
+  assert.deepEqual(normalizeDeliveryReceipt({ status:"delivered", id:"m2" }), { accepted:true, messageId:"m2", status:"delivered" });
 });
 
 test("stage machine blocks unsafe jumps", () => {
