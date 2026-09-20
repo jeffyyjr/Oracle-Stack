@@ -92,7 +92,7 @@ export function campaignEvidenceRelevant(campaign = {}, item = {}) {
   const campaignText=`${campaign.targetBuyer || campaign.target_buyer || ""} ${campaign.offer || ""} ${campaign.objective || ""}`;
   const homeServiceCampaign=/home[- ]service|contractor|hvac|heating|cooling|plumb|roof|electric|landscap/i.test(campaignText);
   const homeServiceListing=/home[- ]service|contractor|hvac|heating|cooling|plumb|roof|electric|landscap/i.test(hayText);
-  const leadAutomationListing=/lead|appointment|booking|schedul|crm|follow[- ]?up|missed[- ]?call|receptionist|sales|qualif|sms|email|voice|automation|ai agent|chatbot/i.test(hayText);
+  const leadAutomationListing=/\b(crm|automation|software|saas|chatbot)\b|\bai (?:agent|assistant|receptionist|sales|voice)\b|lead (?:response|follow[- ]?up|qualification|management|capture)|appointment (?:booking|scheduling)|missed[- ]?call|follow[- ]?up automation|speed[- ]?to[- ]?lead|voice agent/i.test(hayText);
 
   if (directBuyerChannel && homeServiceCampaign && homeServiceListing && leadAutomationListing && explicitCommercialIntent(item)) {
     return true;
