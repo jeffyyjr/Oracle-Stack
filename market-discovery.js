@@ -131,15 +131,35 @@ function baseHost(hostname = "") {
 function extractPublicRoleEmail(html = "", hostname = "") {
   const host = baseHost(hostname);
   const decoded = String(html).replace(/&#64;|&#x40;/gi,"@").replace(/&#46;|&#x2e;/gi,".");
-  const matches = decoded.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [];
-  const roles = /^(info|hello|contact|office|service|services|sales|support|estimates?|quotes?|booking|appointments?|admin|customerservice)$/i;
-  for (const raw of [...new Set(matches.map(x=>x.toLowerCase()))]) {
+  const matches = [...new Set(decoded.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [])].map(x=>x.toLowerCase());
+  const priority = {
+    servicerequest:120, service:115, appointments:110, appointment:110, booking:108,
+    estimates:106, estimate:106, quotes:104, quote:104, clientcare:102, customerservice:100,
+    office:90, contact:88, hello:84, support:82, info:78, sales:74, admin:60
+  };
+  const blockedContext = /(vendor|supplier|procurement|careers?|jobs?|employment|press|media|marketing|advertis|partnership|affiliate|billing|accounts payable|accounts receivable)/i;
+  const preferredContext = /(service request|schedule|appointment|book|estimate|quote|customer|client|support|contact us|call us|request service)/i;
+  const candidates=[];
+
+  for (const raw of matches) {
     const [local,domain] = raw.split("@");
-    if (!local || !domain || !roles.test(local.replace(/[._-]/g,""))) continue;
-    const d = baseHost(domain);
-    if (d === host || d.endsWith("." + host) || host.endsWith("." + d)) return raw.slice(0,320);
+    if (!local || !domain) continue;
+    const d=baseHost(domain);
+    if (!(d===host || d.endsWith("." + host) || host.endsWith("." + d))) continue;
+    const key=local.replace(/[._-]/g,"").toLowerCase();
+    if (!(key in priority)) continue;
+
+    let score=priority[key];
+    const idx=decoded.toLowerCase().indexOf(raw);
+    const context=idx>=0 ? cleanText(decoded.slice(Math.max(0,idx-220),Math.min(decoded.length,idx+raw.length+220))) : "";
+    if (blockedContext.test(context)) score-=100;
+    if (preferredContext.test(context)) score+=18;
+    candidates.push({email:raw.slice(0,320),role:key,score,context:context.slice(0,420)});
   }
-  return null;
+
+  candidates.sort((a,b)=>b.score-a.score);
+  const best=candidates.find(x=>x.score>=70);
+  return best || null;
 }
 
 function decodeHtmlText(value = "") {
@@ -256,19 +276,20 @@ async function inspectBusinessProspect(seed = {}, verticals = []) {
   const vertical=verticals.find(v => new RegExp(v.replace(/\s+/g,"\\s+"),"i").test(combined));
   if(!vertical) return null;
 
-  let email=extractPublicRoleEmail(html,new URL(first.url).hostname);
-  if(!email) {
+  let contact=extractPublicRoleEmail(html,new URL(first.url).hostname);
+  if(!contact) {
     const links=contactLinks(html,first.url);
     const pages=await Promise.allSettled(links.map(link=>fetchPublicHtml(link,4500)));
     for(const result of pages) {
       if(result.status!=="fulfilled" || !result.value) continue;
       const page=result.value;
       pageText += " " + visiblePageText(page.html);
-      email=extractPublicRoleEmail(page.html,new URL(page.url).hostname) || email;
-      if(email) break;
+      contact=extractPublicRoleEmail(page.html,new URL(page.url).hostname) || contact;
+      if(contact) break;
     }
   }
 
+  const email=contact?.email || null;
   const signals=prospectFitSignals(pageText);
   const verified=Boolean(email && signals.length>=1);
   const brandHtml=home?.html||first.html;
@@ -282,10 +303,12 @@ async function inspectBusinessProspect(seed = {}, verticals = []) {
     channel:"business_web",
     signalType:"prospect",
     buyerEmail:email,
+    buyerEmailRole:contact?.role || null,
+    buyerEmailContext:contact?.context || null,
     fitSignals:signals,
     prospecting:true,
     prospectScore:score,
-    snippet:`Verified public business website for ${vertical}. Observable fit signals: ${signals.length?signals.join(", "):"none"}. No explicit purchase request was found.`,
+    snippet:`Verified public business website for ${vertical}. Observable fit signals: ${signals.length?signals.join(", "):"none"}. Public contact role: ${contact?.role || "none"}. No explicit purchase request was found.`,
     verification:{status:verified?"VERIFIED_OPEN":"VERIFY",checkedAt:new Date().toISOString(),method:"public_business_website"},
     qualification:verified?"PROSPECT_QUALIFIED":"PROSPECT_VERIFY"
   };
