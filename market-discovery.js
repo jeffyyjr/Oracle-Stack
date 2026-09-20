@@ -348,18 +348,36 @@ export function buildDiscoveryQuerySpecs(request = "") {
   const campaignVerticals = homeServiceVerticals(`${targetBuyer} ${offer} ${goal}`);
   if (campaignSpecific && campaignVerticals.length) {
     const verticals=campaignVerticals;
+    const verticalGroup="(" + verticals.map(v=>`"${v}"`).join(" OR ") + ")";
     return {
-      techIntent:false,
+      techIntent:true,
       broad:false,
       campaignSpecific:true,
-      prospecting:true,
+      prospecting:false,
       verticals,
-      strategy:"home_service_business_prospecting",
-      specs: verticals.slice(0,5).map(vertical => ({
-        channel:"business_web",
-        signalType:"prospect",
-        q:`"${vertical}" company ("request service" OR "schedule service" OR "24/7" OR financing OR "areas we serve") ("contact us" OR contact OR schedule) -site:yelp.com -site:angi.com -site:homeadvisor.com -site:thumbtack.com -site:bbb.org -site:facebook.com -site:linkedin.com`
-      }))
+      strategy:"home_service_direct_buyer_demand",
+      specs:[
+        {
+          channel:"upwork",
+          signalType:"demand",
+          q:`site:upwork.com/freelance-jobs/apply/ ${verticalGroup} ("AI automation" OR "AI agent" OR "lead follow-up" OR "appointment booking" OR "missed-call" OR CRM OR "AI receptionist" OR "speed-to-lead") (budget OR hourly OR "Fixed Price" OR hiring) -academic -homework`
+        },
+        {
+          channel:"upwork",
+          signalType:"demand",
+          q:`site:upwork.com/freelance-jobs/apply/ ("home service" OR contractor) ("AI voice" OR "AI employee" OR "appointment scheduling" OR "lead qualification" OR "CRM automation") (budget OR hourly OR "Fixed Price" OR hiring)`
+        },
+        {
+          channel:"freelancer",
+          signalType:"demand",
+          q:`site:freelancer.com/projects/ ${verticalGroup} ("AI automation" OR CRM OR booking OR leads OR follow-up) (budget OR fixed OR hourly)`
+        },
+        {
+          channel:"public_rfp",
+          signalType:"demand",
+          q:`("request for proposal" OR RFP OR solicitation) ${verticalGroup} ("CRM" OR automation OR booking OR "customer communication") (deadline OR due)`
+        }
+      ]
     };
   }
 
