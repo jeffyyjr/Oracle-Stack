@@ -87,6 +87,15 @@ function campaignField(request = "", label = "") {
   return match ? cleanText(match[1]).slice(0, 220) : "";
 }
 
+const QUERY_STOP = new Set(["with","that","this","from","your","their","business","businesses","service","services","similar","home","using","into","through","about","only","currently","real","help","automation"]);
+function searchTermGroup(value = "", max = 8) {
+  const terms = compactGoal(value, 260).toLowerCase().split(/\s+/)
+    .map(x => x.replace(/^-+|-+$/g,""))
+    .filter(x => x.length >= 4 && !QUERY_STOP.has(x))
+    .slice(0, max);
+  return terms.length ? "(" + terms.map(x => /^[a-z0-9+#.-]+$/i.test(x) ? x : `"${x}"`).join(" OR ") + ")" : "";
+}
+
 export function buildDiscoveryQuerySpecs(request = "") {
   const goal = compactGoal(request, 220);
   const techTerms = "API integration automation SaaS AWS deployment backend database AI workflow bug fix";
@@ -99,7 +108,9 @@ export function buildDiscoveryQuerySpecs(request = "") {
   if (campaignSpecific) {
     const buyer = targetBuyer || "small business";
     const solution = offer || goal || "automation service";
-    const focused = `${buyer} ${solution}`.slice(0, 260);
+    const buyerGroup = searchTermGroup(buyer, 8) || "(contractor OR hvac OR plumbing OR roofing OR electrical)";
+    const solutionGroup = searchTermGroup(solution, 10) || "(automation OR booking OR crm OR leads)";
+    const focused = `${buyerGroup} ${solutionGroup}`;
     return {
       techIntent,
       broad: false,
@@ -109,27 +120,27 @@ export function buildDiscoveryQuerySpecs(request = "") {
         {
           channel: "upwork",
           signalType: "demand",
-          q: `site:upwork.com/freelance-jobs/apply/ ("${buyer.slice(0, 100)}" OR "${solution.slice(0, 100)}") (automation OR CRM OR "appointment booking" OR "lead follow up" OR "missed calls") ("Fixed Price" OR hourly OR budget) -academic -homework`
+          q: `site:upwork.com/freelance-jobs/apply/ ${buyerGroup} ${solutionGroup} (CRM OR booking OR leads OR "follow up" OR "missed calls") ("Fixed Price" OR hourly OR budget) -academic -homework`
         },
         {
           channel: "freelancer",
           signalType: "demand",
-          q: `site:freelancer.com/projects/ ("${buyer.slice(0, 100)}" OR "${solution.slice(0, 100)}") (automation OR CRM OR booking OR leads OR follow-up) (budget OR fixed OR hourly) -academic -homework`
+          q: `site:freelancer.com/projects/ ${buyerGroup} ${solutionGroup} (CRM OR booking OR leads OR follow-up) (budget OR fixed OR hourly) -academic -homework`
         },
         {
           channel: "reddit",
           signalType: "demand",
-          q: `site:reddit.com/r/forhire/comments/ OR site:reddit.com/r/smallbusiness/comments/ ("${buyer.slice(0, 100)}" OR "${solution.slice(0, 100)}") (hiring OR "need help" OR "looking for" OR budget OR paid)`
+          q: `(site:reddit.com/r/forhire/comments/ OR site:reddit.com/r/smallbusiness/comments/) ${buyerGroup} ${solutionGroup} (hiring OR "need help" OR "looking for" OR budget OR paid)`
         },
         {
           channel: "public_rfp",
           signalType: "demand",
-          q: `("request for proposal" OR RFP OR solicitation OR "request for quote") ("${buyer.slice(0, 100)}" OR "${solution.slice(0, 100)}") (automation OR CRM OR booking OR lead) (deadline OR due)`
+          q: `("request for proposal" OR RFP OR solicitation OR "request for quote") ${buyerGroup} ${solutionGroup} (CRM OR booking OR lead) (deadline OR due)`
         },
         {
           channel: "web_demand",
           signalType: "context",
-          q: `${focused} ("looking for" OR "need help" OR "seeking" OR hiring) (automation OR CRM OR booking OR leads)`
+          q: `${focused} ("looking for" OR "need help" OR "seeking" OR hiring) (CRM OR booking OR leads OR follow-up)`
         }
       ]
     };
@@ -225,8 +236,27 @@ export function buildDiscoveryQuerySpecs(request = "") {
 
 export function buildAccessibleRescueSpecs(request = "") {
   const goal = compactGoal(request, 160) || "small business service";
-  const broad = broadOpportunityIntent(request);
+  const targetBuyer = campaignField(request, "Target buyer");
+  const offer = campaignField(request, "Offer");
+  const broad = !targetBuyer && !offer && broadOpportunityIntent(request);
   const techIntent = /tech|software|saas|app|website|api|integration|automation|deploy|bug|code|data|ai|computer/i.test(goal);
+
+  if (targetBuyer || offer) {
+    const buyerGroup = searchTermGroup(targetBuyer || "small business", 8) || "(contractor OR hvac OR plumbing OR roofing OR electrical)";
+    const solutionGroup = searchTermGroup(offer || goal, 10) || "(automation OR booking OR crm OR leads)";
+    return [
+      {
+        channel: "reddit",
+        signalType: "demand",
+        q: `site:reddit.com/r/forhire/comments/ ${buyerGroup} ${solutionGroup} (hiring OR paid OR budget OR "need help")`
+      },
+      {
+        channel: "public_rfp",
+        signalType: "demand",
+        q: `("request for proposal" OR "request for quote" OR solicitation) ${buyerGroup} ${solutionGroup} (deadline OR "due date")`
+      }
+    ];
+  }
 
   if (broad) {
     return [
