@@ -87,6 +87,16 @@ export function buildOutreachDraft(campaign, item) {
   return `Hi — I saw your request about ${problem}. We may be able to help with ${offer}. If the need is still open, I can send a short plan with scope, timing, and a clear price. No pressure if it has already been handled.`;
 }
 
+export function normalizeDeliveryReceipt(result = {}) {
+  const status = text(result.status || result.deliveryStatus, 40).toLowerCase();
+  const messageId = text(result.messageId || result.id, 240);
+  const accepted = result.accepted === true || result.sent === true || ["accepted", "sent", "delivered"].includes(status);
+  if (!accepted || !messageId) {
+    return { accepted: false, messageId: null, status: status || "unconfirmed" };
+  }
+  return { accepted: true, messageId, status: status || "accepted" };
+}
+
 export function nextStage(current, requested) {
   if (!SALES_STAGES.includes(current) || !SALES_STAGES.includes(requested)) throw new Error("Invalid sales stage.");
   if (CLOSED.has(current) && current !== requested) throw new Error("Closed deals cannot be reopened automatically.");
