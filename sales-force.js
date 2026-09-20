@@ -87,6 +87,17 @@ export function campaignEvidenceRelevant(campaign = {}, item = {}) {
   const channel = String(item.channel || item.evidence?.channel || "").toLowerCase();
 
   if (/micro bounty|bounty alert|best .* tools|ranked for 20\d\d|software crm|autonomous ai systems/i.test(hayText)) return false;
+
+  const directBuyerChannel=["upwork","freelancer","peopleperhour","reddit","public_rfp"].includes(channel) && item.signalType==="demand";
+  const campaignText=`${campaign.targetBuyer || campaign.target_buyer || ""} ${campaign.offer || ""} ${campaign.objective || ""}`;
+  const homeServiceCampaign=/home[- ]service|contractor|hvac|heating|cooling|plumb|roof|electric|landscap/i.test(campaignText);
+  const homeServiceListing=/home[- ]service|contractor|hvac|heating|cooling|plumb|roof|electric|landscap/i.test(hayText);
+  const leadAutomationListing=/lead|appointment|booking|schedul|crm|follow[- ]?up|missed[- ]?call|receptionist|sales|qualif|sms|email|voice|automation|ai agent|chatbot/i.test(hayText);
+
+  if (directBuyerChannel && homeServiceCampaign && homeServiceListing && leadAutomationListing && explicitCommercialIntent(item)) {
+    return true;
+  }
+
   if (item.signalType === "prospect") {
     if (buyerTerms.length && buyerMatches < 1) return false;
   } else if (buyerTerms.length) {
