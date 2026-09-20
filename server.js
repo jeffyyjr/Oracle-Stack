@@ -13,7 +13,7 @@ import { techHunterInstructions } from "./agents/tech-problem-hunter.js";
 import { techFixerInstructions } from "./agents/tech-fixer.js";
 import { dealQualifierInstructions } from "./agents/deal-qualifier.js";
 import { executionAgentInstructions } from "./agents/execution-agent.js";
-import { normalizeCampaign, evidenceToLead, campaignEvidenceRelevant, nextStage, summarizePipeline } from "./sales-force.js";
+import { normalizeCampaign, evidenceToLead, campaignEvidenceRelevant, campaignEvidenceQualifies, nextStage, summarizePipeline } from "./sales-force.js";
 import { resendOutreachConfigured, resendConfigurationStatus, sendResendOutreach } from "./resend-connector.js";
 import { gmailOutreachConfigured, gmailConfigurationStatus, sendGmailOutreach, pollGmailReplies, verifyGmailConnection } from "./gmail-connector.js";
 import { gmailBridgeConfigured, gmailBridgeStatus, sendGmailBridgeOutreach, verifyGmailBridgeConnection } from "./gmail-https-bridge.js";
@@ -381,13 +381,15 @@ async function cleanupIrrelevantUncontactedLeads() {
     for (const lead of leads) {
       if (!["discovered","qualified","outreach_ready"].includes(lead.stage) || lead.outreach_status!=="not_sent") continue;
       checked++;
-      const relevant = campaignEvidenceRelevant(campaign,{
+      const qualifies = campaignEvidenceQualifies(campaign,{
         title:lead.name,
         snippet:lead.buyer_problem,
         channel:lead.evidence?.channel,
+        signalType:lead.evidence?.signalType,
+        verification:lead.evidence?.verification,
         evidence:lead.evidence
       });
-      if (relevant) continue;
+      if (qualifies) continue;
       await updateSalesLead(lead.id,{
         stage:"lost",
         notes:`${lead.notes||""}\nClosed automatically at startup: unrelated to campaign target.`.trim().slice(0,4000)
@@ -472,8 +474,8 @@ async function runSalesCampaign(campaignRow,{manual=false}={}) {
     let irrelevantClosed=0;
     for (const lead of existing) {
       if (!["discovered","qualified","outreach_ready"].includes(lead.stage) || lead.outreach_status!=="not_sent") continue;
-      const relevant=campaignEvidenceRelevant(campaign,{title:lead.name,snippet:lead.buyer_problem,channel:lead.evidence?.channel,evidence:lead.evidence});
-      if (relevant) continue;
+      const qualifies=campaignEvidenceQualifies(campaign,{title:lead.name,snippet:lead.buyer_problem,channel:lead.evidence?.channel,signalType:lead.evidence?.signalType,verification:lead.evidence?.verification,evidence:lead.evidence});
+      if (qualifies) continue;
       await updateSalesLead(lead.id,{stage:"lost",notes:`${lead.notes||""}\nClosed automatically: unrelated to current campaign target.`.trim().slice(0,4000)});
       await recordSalesEvent({campaignId:campaign.id,leadId:lead.id,eventType:"lead_closed_irrelevant",detail:{name:lead.name||"",sourceUrl:lead.source_url||null}});
       irrelevantClosed++;
