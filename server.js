@@ -431,7 +431,17 @@ async function runSalesCampaign(campaignRow,{manual=false}={}) {
   const query=[campaign.objective,campaign.offer&&`Offer: ${campaign.offer}`,campaign.targetBuyer&&`Target buyer: ${campaign.targetBuyer}`,campaign.constraints&&`Constraints: ${campaign.constraints}`].filter(Boolean).join("\n");
   await recordSalesEvent({campaignId:campaign.id,eventType:"run_started",detail:{manual}});
   try {
-    const evidence=await discoverMarketEvidence(query,{count:Math.max(campaign.maxLeadsPerRun*2,10)});
+    const existing=await listSalesLeads({campaignId:campaign.id,limit:500});
+    let irrelevantClosed=0;
+    for (const lead of existing) {
+      if (!["discovered","qualified","outreach_ready"].includes(lead.stage) || lead.outreach_status!=="not_sent") continue;
+      const relevant=campaignEvidenceRelevant(campaign,{title:lead.name,snippet:lead.buyer_problem});
+      if (relevant) continue;
+      await updateSalesLead(lead.id,{stage:"lost",notes:`${lead.notes||""}\nClosed automatically: unrelated to current campaign target.`.trim().slice(0,4000)});
+      await recordSalesEvent({campaignId:campaign.id,leadId:lead.id,eventType:"lead_closed_irrelevant",detail:{name:lead.name||"",sourceUrl:lead.source_url||null}});
+      irrelevantClosed++;
+    }
+    const evidence=await discoverMarketEvidence(query,{count:Math.max(campaign.maxLeadsPerRun*3,15)});
     const created=[];let qualified=0,sent=0;
     for(const item of evidence.results) {
       if (created.length >= campaign.maxLeadsPerRun) break;
@@ -452,7 +462,7 @@ async function runSalesCampaign(campaignRow,{manual=false}={}) {
       created.push(lead);
     }
     await markSalesCampaignRun(campaign.id,{ok:true});
-    const summary={evidenceFound:evidence.results.length,rejected:evidence.rejectedCount||0,processed:created.length,qualified,outreachSent:sent,discoveryProvider:evidence.provider||null};
+    const summary={evidenceFound:evidence.results.length,rejected:evidence.rejectedCount||0,processed:created.length,qualified,outreachSent:sent,irrelevantClosed,discoveryProvider:evidence.provider||null};
     await recordSalesEvent({campaignId:campaign.id,eventType:"run_completed",detail:summary});
     return {ok:true,summary,leads:created};
   } catch(error) {
