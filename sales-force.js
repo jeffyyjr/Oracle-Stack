@@ -118,6 +118,47 @@ export function classifyInboundReply(input = {}) {
   return { accepted: true, classification: "needs_review", action: "hold", stage: "replied", providerMessageId, inReplyTo };
 }
 
+export function buildBoundedReply(input = {}) {
+  const classification = input.classification || {};
+  const offer = text(input.offer, 1000);
+  const scope = text(input.scope || offer, 1000);
+  const floor = money(input.minimumPrice);
+  const target = money(input.targetPrice);
+  const buyerBudget = money(input.buyerBudget);
+  const maxDiscountPercent = Math.max(0, Math.min(50, Number(input.maxDiscountPercent) || 0));
+  const currency = text(input.currency || "USD", 8).toUpperCase();
+
+  if (classification.accepted !== true || classification.classification !== "positive") {
+    return { allowed: false, action: "hold", reason: "verified_positive_reply_required" };
+  }
+  if (!offer || floor === null || target === null || target < floor) {
+    return { allowed: false, action: "hold", reason: "commercial_boundaries_required" };
+  }
+
+  const discountFloor = Math.round(target * (1 - maxDiscountPercent / 100) * 100) / 100;
+  const effectiveFloor = Math.max(floor, discountFloor);
+  if (buyerBudget !== null && buyerBudget < effectiveFloor) {
+    return {
+      allowed: false,
+      action: "escalate",
+      reason: "buyer_budget_below_authorized_floor",
+      boundary: { minimumPrice: effectiveFloor, targetPrice: target, currency }
+    };
+  }
+
+  const price = buyerBudget === null ? target : Math.max(effectiveFloor, Math.min(target, buyerBudget));
+  const reply = `Thanks for the reply. For ${scope}, the price is ${currency} ${price.toFixed(2)}. I can provide a concise scope and delivery plan before anything is committed. If that range works, the next step is to confirm scope and timing.`;
+  return {
+    allowed: true,
+    action: "draft",
+    autoSend: false,
+    price,
+    currency,
+    reply,
+    boundary: { minimumPrice: effectiveFloor, targetPrice: target, maxDiscountPercent }
+  };
+}
+
 export function nextStage(current, requested) {
   if (!SALES_STAGES.includes(current) || !SALES_STAGES.includes(requested)) throw new Error("Invalid sales stage.");
   if (CLOSED.has(current) && current !== requested) throw new Error("Closed deals cannot be reopened automatically.");
