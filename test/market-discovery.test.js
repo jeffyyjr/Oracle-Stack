@@ -5,8 +5,22 @@ import {
   buildDiscoveryQuerySpecs,
   buildAccessibleRescueSpecs,
   classifyDemandEvidence,
-  resolveBuyerVerification
+  resolveBuyerVerification,
+  salesChannelEnabled
 } from "../market-discovery.js";
+
+test("Upwork is disabled by default and can be re-enabled explicitly", () => {
+  const original = process.env.SALES_UPWORK_ENABLED;
+  process.env.SALES_UPWORK_ENABLED = "false";
+  assert.equal(salesChannelEnabled("upwork"), false);
+  assert.equal(salesChannelEnabled("freelancer"), true);
+
+  process.env.SALES_UPWORK_ENABLED = "true";
+  assert.equal(salesChannelEnabled("upwork"), true);
+
+  if (original === undefined) delete process.env.SALES_UPWORK_ENABLED;
+  else process.env.SALES_UPWORK_ENABLED = original;
+});
 
 test("broad inventory-free request uses buyer radar", () => {
   const request = "Find me something legitimate I can sell without holding inventory, validate the demand, and figure out who would buy it.";
