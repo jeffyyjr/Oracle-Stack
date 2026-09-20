@@ -196,52 +196,71 @@ async function fetchPublicHtml(url, timeoutMs = 8000) {
   } catch { return null; } finally { clearTimeout(timer); }
 }
 
+async function inspectBusinessProspect(seed = {}, verticals = []) {
+  const safe=publicWebsiteUrl(seed.url); if(!safe) return null;
+  const host=baseHost(safe.hostname);
+  if(/(yelp|angi|homeadvisor|thumbtack|bbb|facebook|linkedin|mapquest|yellowpages|forbes|wikipedia|reddit)\./i.test(host)) return null;
+
+  const first=await fetchPublicHtml(seed.url,4500); if(!first) return null;
+  let html=first.html, pageText=visiblePageText(html);
+  const combined=`${seed.title} ${seed.snippet} ${pageText.slice(0,12000)}`;
+  const vertical=verticals.find(v => new RegExp(v.replace(/\s+/g,"\\s+"),"i").test(combined));
+  if(!vertical) return null;
+
+  let email=extractPublicRoleEmail(html,new URL(first.url).hostname);
+  if(!email) {
+    const links=contactLinks(html,first.url);
+    const pages=await Promise.allSettled(links.map(link=>fetchPublicHtml(link,4500)));
+    for(const result of pages) {
+      if(result.status!=="fulfilled" || !result.value) continue;
+      const page=result.value;
+      pageText += " " + visiblePageText(page.html);
+      email=extractPublicRoleEmail(page.html,new URL(page.url).hostname) || email;
+      if(email) break;
+    }
+  }
+
+  const signals=prospectFitSignals(pageText);
+  const verified=Boolean(email && signals.length>=1);
+  const businessName=cleanText(seed.title).replace(/\s+[|–—-]\s+.*$/,"").slice(0,180) || host;
+  const score=Math.min(92,55 + (email?15:0) + Math.min(20,signals.length*5) + (signals.includes("urgent_lead_flow")?5:0));
+  return {
+    ...seed,
+    title:businessName,
+    url:first.url,
+    source:"business_website",
+    channel:"business_web",
+    signalType:"prospect",
+    buyerEmail:email,
+    fitSignals:signals,
+    prospecting:true,
+    prospectScore:score,
+    snippet:`Verified public business website for ${vertical}. Observable fit signals: ${signals.length?signals.join(", "):"none"}. No explicit purchase request was found.`,
+    verification:{status:verified?"VERIFIED_OPEN":"VERIFY",checkedAt:new Date().toISOString(),method:"public_business_website"},
+    qualification:verified?"PROSPECT_QUALIFIED":"PROSPECT_VERIFY"
+  };
+}
+
 async function enrichBusinessProspects(items = [], verticals = [], limit = 12) {
-  const out=[]; const seenHosts=new Set();
-  for (const seed of items) {
-    if(out.length>=limit) break;
+  const seeds=[]; const seenHosts=new Set();
+  for(const seed of items) {
     const safe=publicWebsiteUrl(seed.url); if(!safe) continue;
     const host=baseHost(safe.hostname);
-    if(seenHosts.has(host) || /(yelp|angi|homeadvisor|thumbtack|bbb|facebook|linkedin|mapquest|yellowpages|forbes|wikipedia|reddit)\./i.test(host)) continue;
-    seenHosts.add(host);
-
-    const first=await fetchPublicHtml(seed.url); if(!first) continue;
-    let html=first.html, text=visiblePageText(html);
-    const vertical=verticals.find(v => new RegExp(v.replace(/\s+/g,"\\s+"),"i").test(`${seed.title} ${seed.snippet} ${text.slice(0,12000)}`));
-    if(!vertical) continue;
-
-    let email=extractPublicRoleEmail(html,new URL(first.url).hostname);
-    const links=contactLinks(html,first.url);
-    for(const link of links) {
-      if(email) break;
-      const page=await fetchPublicHtml(link);
-      if(!page) continue;
-      html += " " + page.html;
-      text += " " + visiblePageText(page.html);
-      email=extractPublicRoleEmail(page.html,new URL(page.url).hostname) || email;
-    }
-
-    const signals=prospectFitSignals(text);
-    const verified=Boolean(email && signals.length>=1);
-    const businessName=cleanText(seed.title).replace(/\s+[|–—-]\s+.*$/,"").slice(0,180) || host;
-    const score=Math.min(92,55 + (email?15:0) + Math.min(20,signals.length*5) + (signals.includes("urgent_lead_flow")?5:0));
-    out.push({
-      ...seed,
-      title:businessName,
-      url:first.url,
-      source:"business_website",
-      channel:"business_web",
-      signalType:"prospect",
-      buyerEmail:email,
-      fitSignals:signals,
-      prospecting:true,
-      prospectScore:score,
-      snippet:`Verified public business website for ${vertical}. Observable fit signals: ${signals.length?signals.join(", "):"none"}. No explicit purchase request was found.`,
-      verification:{status:verified?"VERIFIED_OPEN":"VERIFY",checkedAt:new Date().toISOString(),method:"public_business_website"},
-      qualification:verified?"PROSPECT_QUALIFIED":"PROSPECT_VERIFY"
-    });
+    if(seenHosts.has(host)) continue;
+    seenHosts.add(host); seeds.push(seed);
+    if(seeds.length>=Math.max(limit+6,18)) break;
   }
-  return out;
+
+  const out=[]; let cursor=0;
+  const worker=async()=>{
+    while(cursor<seeds.length && out.length<limit) {
+      const seed=seeds[cursor++];
+      const prospect=await inspectBusinessProspect(seed,verticals);
+      if(prospect) out.push(prospect);
+    }
+  };
+  await Promise.all(Array.from({length:Math.min(6,seeds.length)},()=>worker()));
+  return out.slice(0,limit);
 }
 
 export function buildDiscoveryQuerySpecs(request = "") {
@@ -262,10 +281,11 @@ export function buildDiscoveryQuerySpecs(request = "") {
       prospecting:true,
       verticals,
       strategy:"home_service_business_prospecting",
-      specs: verticals.slice(0,5).flatMap(vertical => [
-        {channel:"business_web",signalType:"prospect",q:`"${vertical}" ("request service" OR "schedule service" OR "contact us") -site:yelp.com -site:angi.com -site:homeadvisor.com -site:thumbtack.com -site:bbb.org -site:facebook.com -site:linkedin.com`},
-        {channel:"business_web",signalType:"prospect",q:`"${vertical}" ("24/7" OR "emergency service" OR financing OR "areas we serve") ("contact" OR "schedule") -site:yelp.com -site:angi.com -site:homeadvisor.com -site:thumbtack.com`}
-      ])
+      specs: verticals.slice(0,5).map(vertical => ({
+        channel:"business_web",
+        signalType:"prospect",
+        q:`"${vertical}" company ("request service" OR "schedule service" OR "24/7" OR financing OR "areas we serve") ("contact us" OR contact OR schedule) -site:yelp.com -site:angi.com -site:homeadvisor.com -site:thumbtack.com -site:bbb.org -site:facebook.com -site:linkedin.com`
+      }))
     };
   }
 
