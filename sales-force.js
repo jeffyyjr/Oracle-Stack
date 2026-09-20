@@ -106,6 +106,11 @@ function explicitCommercialIntent(item) {
 }
 
 export function campaignEvidenceQualifies(campaign = {}, item = {}) {
+  const title = String(item.title || "").toLowerCase();
+  const url = String(item.url || item.sourceUrl || "").toLowerCase();
+  const editorialTitle = /^(what is|how to)|\b(guide|explained|tutorial|tips|examples|template|best .* tools|ranked for 20\d\d)\b/i.test(title);
+  const editorialUrl = /\/(blog|blogs|guide|guides|article|articles|resources|learn|glossary)\//i.test(url);
+  if (editorialTitle || editorialUrl) return false;
   if (!campaignEvidenceRelevant(campaign,item)) return false;
   if (item.signalType !== "demand") return false;
   if (item.verification?.status !== "VERIFIED_OPEN") return false;
