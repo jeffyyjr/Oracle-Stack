@@ -371,6 +371,40 @@ function salesCampaignShape(row) {
   };
 }
 
+async function cleanupIrrelevantUncontactedLeads() {
+  if (!storageEnabled()) return { checked:0, closed:0 };
+  const campaigns = await listSalesCampaigns();
+  let checked=0, closed=0;
+  for (const row of campaigns) {
+    const campaign = salesCampaignShape(row);
+    const leads = await listSalesLeads({campaignId:campaign.id,limit:500});
+    for (const lead of leads) {
+      if (!["discovered","qualified","outreach_ready"].includes(lead.stage) || lead.outreach_status!=="not_sent") continue;
+      checked++;
+      const relevant = campaignEvidenceRelevant(campaign,{
+        title:lead.name,
+        snippet:lead.buyer_problem,
+        channel:lead.evidence?.channel,
+        evidence:lead.evidence
+      });
+      if (relevant) continue;
+      await updateSalesLead(lead.id,{
+        stage:"lost",
+        notes:`${lead.notes||""}\nClosed automatically at startup: unrelated to campaign target.`.trim().slice(0,4000)
+      });
+      await recordSalesEvent({
+        campaignId:campaign.id,
+        leadId:lead.id,
+        eventType:"lead_closed_irrelevant_startup",
+        detail:{name:lead.name||"",sourceUrl:lead.source_url||null}
+      });
+      closed++;
+    }
+  }
+  console.log("SALES_STARTUP_CLEANUP",JSON.stringify({checked,closed}));
+  return { checked, closed };
+}
+
 function salesOutreachConfigured() {
   return gmailBridgeConfigured() || gmailOutreachConfigured() || resendOutreachConfigured() || Boolean(String(process.env.SALES_OUTREACH_WEBHOOK_URL || "").trim());
 }
@@ -626,5 +660,5 @@ async function requirePersistentQuota(req,res,next) {
   }
 }
 app.post("/api/oracle", requireApiKey, requirePersistentQuota, oracleHandler); app.post("/v1/oracle", requireApiKey, requirePersistentQuota, oracleHandler);
-async function start() { try { const state = await initStorage(); if (state.enabled) { setDynamicApiKeys(await findActiveBetaKeyHashes()); const rows = await loadRoutePerformance(); for (const row of rows) modelPerformance.set(row.route_key, { attempts: Number(row.attempts || 0), successes: Number(row.successes || 0), failures: Number(row.failures || 0), repairs: Number(row.repairs || 0), feedbackTotal: Number(row.feedback_total || 0), feedbackCount: Number(row.feedback_count || 0), avgMs: Number(row.avg_ms || 0) }); console.log(`Oracle loaded ${rows.length} learned routes from Postgres.`); } else console.log("Oracle persistence: in-memory mode (DATABASE_URL not configured)."); } catch (error) { console.error("Oracle persistence unavailable; continuing in memory:", error.message); } app.listen(PORT, "0.0.0.0", () => { console.log(`Oracle Stack listening on 0.0.0.0:${PORT}`); setTimeout(()=>verifyGmailBridgeConnection().then(result=>console.log("GMAIL_BRIDGE_CONNECTION_TEST",JSON.stringify(result))).catch(error=>console.error("GMAIL_BRIDGE_CONNECTION_TEST_FAILED",error.message)),4000); setTimeout(()=>salesForceTick(),5000); setInterval(()=>salesForceTick(),60000).unref(); if (!gmailBridgeConfigured()) { setTimeout(()=>verifyGmailConnection().then(result=>console.log("GMAIL_CONNECTION_TEST",JSON.stringify(result))).catch(error=>console.error("GMAIL_CONNECTION_TEST_FAILED",error.message)),8000); setTimeout(()=>pollGmailReplies().catch(error=>console.error("Gmail reply poll failed:",error.message)),15000); setInterval(()=>pollGmailReplies().catch(error=>console.error("Gmail reply poll failed:",error.message)),120000).unref(); } if (process.env.ORACLE_BENCHMARK_ON_START === "true") { const taskIds=String(process.env.ORACLE_BENCHMARK_TASK_IDS||"").split(",").map(x=>x.trim()).filter(Boolean); const modelIds=String(process.env.ORACLE_BENCHMARK_MODEL_IDS||"").split(",").map(x=>x.trim()).filter(Boolean); console.log("ORACLE_BENCHMARK starting one-time benchmark.", JSON.stringify({taskIds:taskIds.length?taskIds:"all",modelIds:modelIds.length?modelIds:"all"})); runBenchmarkSuite({ repeats: 1, taskIds, modelIds, resume:false }).then(() => console.log("ORACLE_BENCHMARK_RESULT", JSON.stringify(benchmarkState.report?.summary || []))).catch(error => console.error("ORACLE_BENCHMARK_ERROR", error.message)); } }); }
+async function start() { try { const state = await initStorage(); if (state.enabled) { setDynamicApiKeys(await findActiveBetaKeyHashes()); const rows = await loadRoutePerformance(); for (const row of rows) modelPerformance.set(row.route_key, { attempts: Number(row.attempts || 0), successes: Number(row.successes || 0), failures: Number(row.failures || 0), repairs: Number(row.repairs || 0), feedbackTotal: Number(row.feedback_total || 0), feedbackCount: Number(row.feedback_count || 0), avgMs: Number(row.avg_ms || 0) }); console.log(`Oracle loaded ${rows.length} learned routes from Postgres.`); await cleanupIrrelevantUncontactedLeads(); } else console.log("Oracle persistence: in-memory mode (DATABASE_URL not configured)."); } catch (error) { console.error("Oracle persistence unavailable; continuing in memory:", error.message); } app.listen(PORT, "0.0.0.0", () => { console.log(`Oracle Stack listening on 0.0.0.0:${PORT}`); setTimeout(()=>verifyGmailBridgeConnection().then(result=>console.log("GMAIL_BRIDGE_CONNECTION_TEST",JSON.stringify(result))).catch(error=>console.error("GMAIL_BRIDGE_CONNECTION_TEST_FAILED",error.message)),4000); setTimeout(()=>salesForceTick(),5000); setInterval(()=>salesForceTick(),60000).unref(); if (!gmailBridgeConfigured()) { setTimeout(()=>verifyGmailConnection().then(result=>console.log("GMAIL_CONNECTION_TEST",JSON.stringify(result))).catch(error=>console.error("GMAIL_CONNECTION_TEST_FAILED",error.message)),8000); setTimeout(()=>pollGmailReplies().catch(error=>console.error("Gmail reply poll failed:",error.message)),15000); setInterval(()=>pollGmailReplies().catch(error=>console.error("Gmail reply poll failed:",error.message)),120000).unref(); } if (process.env.ORACLE_BENCHMARK_ON_START === "true") { const taskIds=String(process.env.ORACLE_BENCHMARK_TASK_IDS||"").split(",").map(x=>x.trim()).filter(Boolean); const modelIds=String(process.env.ORACLE_BENCHMARK_MODEL_IDS||"").split(",").map(x=>x.trim()).filter(Boolean); console.log("ORACLE_BENCHMARK starting one-time benchmark.", JSON.stringify({taskIds:taskIds.length?taskIds:"all",modelIds:modelIds.length?modelIds:"all"})); runBenchmarkSuite({ repeats: 1, taskIds, modelIds, resume:false }).then(() => console.log("ORACLE_BENCHMARK_RESULT", JSON.stringify(benchmarkState.report?.summary || []))).catch(error => console.error("ORACLE_BENCHMARK_ERROR", error.message)); } }); }
 start();
