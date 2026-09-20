@@ -75,3 +75,16 @@ export async function sendGmailBridgeOutreach({ lead, message }) {
 export function bridgeInboundSignature(body, secret) {
   return crypto.createHmac("sha256", String(secret || "")).update(body).digest("hex");
 }
+
+
+export async function verifyGmailBridgeConnection() {
+  if (!gmailBridgeConfigured()) return { ok:false, reason:"gmail_bridge_not_fully_configured" };
+  const result = await fetchJson(env("GMAIL_BRIDGE_URL"), {
+    method:"POST",
+    headers:{ "Content-Type":"application/json", "User-Agent":"Oracle-Stack-Gmail-Bridge/1.0" },
+    body:JSON.stringify({ action:"healthcheck", secret:env("GMAIL_BRIDGE_SECRET") })
+  });
+  if (result?.error === "unauthorized") return { ok:false, reason:"bridge_secret_mismatch" };
+  if (result?.error === "unknown_action") return { ok:true, authenticated:true };
+  return { ok:Boolean(result?.ok), authenticated:Boolean(result?.ok), response:result };
+}
