@@ -15,6 +15,7 @@ import { dealQualifierInstructions } from "./agents/deal-qualifier.js";
 import { executionAgentInstructions } from "./agents/execution-agent.js";
 import { normalizeCampaign, evidenceToLead, nextStage, summarizePipeline } from "./sales-force.js";
 import { resendOutreachConfigured, resendConfigurationStatus, sendResendOutreach } from "./resend-connector.js";
+import { gmailOutreachConfigured, gmailConfigurationStatus, sendGmailOutreach, pollGmailReplies } from "./gmail-connector.js";
 import { materializeExecutionArtifacts, applyArtifactRepairs, rerunArtifactTests, finalizeArtifact } from "./artifact-workspace.js";
 import {
   initStorage, storageEnabled, loadRoutePerformance, saveRoutePerformance,
@@ -274,7 +275,7 @@ async function runCandidate({ request, route, model, marketEvidence = null }) {
     const elapsedMs = Date.now() - started; const pass = route.domain === "revenue" ? Boolean(answer && answer.trim()) : Boolean(judged.qa.pass); updatePerformance({ modelId: model.id, domain: route.domain, depth: route.depth, success: pass, repaired, ms: elapsedMs }); return { ok: pass, answer, qa: judged.qa, repaired, calls, elapsedMs, error: pass ? null : "QA failed after repair" };
   } catch (error) { const elapsedMs = Date.now() - started; updatePerformance({ modelId: model.id, domain: route.domain, depth: route.depth, success: false, repaired, ms: elapsedMs }); return { ok: false, answer: "", qa: { pass: false, issues: [error.message], repair_instructions: "" }, repaired, calls, elapsedMs, error: error.message }; }
 }
-app.get("/api/health", (_req, res) => res.json({ ok: true, service: "oracle-stack", mode: "autonomous-sales-force", liveMarketDiscovery: discoveryEnabled(), salesForce: { enabled: process.env.SALES_FORCE_ENABLED !== "false", persistent: storageEnabled(), outreachConnector: salesOutreachConfigured(), resend: resendConfigurationStatus() }, routingPolicy: ROUTING_POLICY, persistence: storageEnabled() ? "postgres" : "memory", developerApi: apiAuthEnabled() ? "enabled" : "disabled", failover: { enabled: true, maxModels: MAX_FAILOVER_MODELS, providerTimeoutMs: PROVIDER_TIMEOUT_MS, revenueProviderTimeoutMs: REVENUE_PROVIDER_TIMEOUT_MS, revenueHedging: true, revenueHedgeDelayMs: Math.max(1000, Number(process.env.REVENUE_HEDGE_DELAY_MS || 5000)) }, providers: [...new Set(modelRegistry().map(model => model.provider))], models: modelRegistry().map(model => ({ id: model.id, provider: model.provider, model: model.model })) }));
+app.get("/api/health", (_req, res) => res.json({ ok: true, service: "oracle-stack", mode: "autonomous-sales-force", liveMarketDiscovery: discoveryEnabled(), salesForce: { enabled: process.env.SALES_FORCE_ENABLED !== "false", persistent: storageEnabled(), outreachConnector: salesOutreachConfigured(), gmail: gmailConfigurationStatus(), resend: resendConfigurationStatus() }, routingPolicy: ROUTING_POLICY, persistence: storageEnabled() ? "postgres" : "memory", developerApi: apiAuthEnabled() ? "enabled" : "disabled", failover: { enabled: true, maxModels: MAX_FAILOVER_MODELS, providerTimeoutMs: PROVIDER_TIMEOUT_MS, revenueProviderTimeoutMs: REVENUE_PROVIDER_TIMEOUT_MS, revenueHedging: true, revenueHedgeDelayMs: Math.max(1000, Number(process.env.REVENUE_HEDGE_DELAY_MS || 5000)) }, providers: [...new Set(modelRegistry().map(model => model.provider))], models: modelRegistry().map(model => ({ id: model.id, provider: model.provider, model: model.model })) }));
 app.get("/api/artifacts", async (req,res) => {
   if(!storageEnabled()) return res.status(503).json({error:"Postgres persistence is not enabled."});
   try { res.json({artifacts:await listArtifacts(req.query.limit)}); }
@@ -370,10 +371,21 @@ function salesCampaignShape(row) {
 }
 
 function salesOutreachConfigured() {
-  return resendOutreachConfigured() || Boolean(String(process.env.SALES_OUTREACH_WEBHOOK_URL || "").trim());
+  return gmailOutreachConfigured() || resendOutreachConfigured() || Boolean(String(process.env.SALES_OUTREACH_WEBHOOK_URL || "").trim());
 }
 
 async function sendSalesOutreach(campaign,lead) {
+  if (gmailOutreachConfigured()) {
+    const result = await sendGmailOutreach({ lead, message: lead.outreach_draft || lead.outreachDraft });
+    if (!result.accepted) {
+      await recordSalesEvent({campaignId:campaign.id,leadId:lead.id,eventType:"outreach_held",detail:{connector:"gmail",reason:result.reason}});
+      return {sent:false,reason:result.reason,connectorResponse:result};
+    }
+    const updated=await updateSalesLead(lead.id,{stage:"contacted",outreachStatus:"sent",externalMessageId:result.messageId});
+    await recordSalesEvent({campaignId:campaign.id,leadId:lead.id,eventType:"outreach_sent",detail:{connector:"gmail",externalMessageId:result.messageId,to:result.to}});
+    return {sent:true,lead:updated,connectorResponse:result};
+  }
+
   if (resendOutreachConfigured()) {
     const result = await sendResendOutreach({ lead, message: lead.outreach_draft || lead.outreachDraft });
     if (!result.accepted) {
@@ -443,7 +455,7 @@ async function salesForceTick() {
 }
 
 app.get("/api/sales/dashboard",requireAdmin,async(req,res)=>{
-  try{const campaignId=String(req.query.campaignId||"").trim()||null;const [campaigns,leads,events]=await Promise.all([listSalesCampaigns(),listSalesLeads({campaignId,limit:250}),listSalesEvents(campaignId,100)]);res.json({automationEnabled:process.env.SALES_FORCE_ENABLED!=="false",discoveryEnabled:discoveryEnabled(),outreachConnector:salesOutreachConfigured(),resend:resendConfigurationStatus(),campaigns,leads,events,summary:summarizePipeline(leads)});}
+  try{const campaignId=String(req.query.campaignId||"").trim()||null;const [campaigns,leads,events]=await Promise.all([listSalesCampaigns(),listSalesLeads({campaignId,limit:250}),listSalesEvents(campaignId,100)]);res.json({automationEnabled:process.env.SALES_FORCE_ENABLED!=="false",discoveryEnabled:discoveryEnabled(),outreachConnector:salesOutreachConfigured(),gmail:gmailConfigurationStatus(),resend:resendConfigurationStatus(),campaigns,leads,events,summary:summarizePipeline(leads)});}
   catch(error){res.status(500).json({error:error.message});}
 });
 app.post("/api/sales/campaigns",requireAdmin,async(req,res)=>{try{const campaign=normalizeCampaign(req.body||{});res.status(201).json({campaign:await createSalesCampaign(campaign)});}catch(error){res.status(400).json({error:error.message});}});
@@ -587,5 +599,5 @@ async function requirePersistentQuota(req,res,next) {
   }
 }
 app.post("/api/oracle", requireApiKey, requirePersistentQuota, oracleHandler); app.post("/v1/oracle", requireApiKey, requirePersistentQuota, oracleHandler);
-async function start() { try { const state = await initStorage(); if (state.enabled) { setDynamicApiKeys(await findActiveBetaKeyHashes()); const rows = await loadRoutePerformance(); for (const row of rows) modelPerformance.set(row.route_key, { attempts: Number(row.attempts || 0), successes: Number(row.successes || 0), failures: Number(row.failures || 0), repairs: Number(row.repairs || 0), feedbackTotal: Number(row.feedback_total || 0), feedbackCount: Number(row.feedback_count || 0), avgMs: Number(row.avg_ms || 0) }); console.log(`Oracle loaded ${rows.length} learned routes from Postgres.`); } else console.log("Oracle persistence: in-memory mode (DATABASE_URL not configured)."); } catch (error) { console.error("Oracle persistence unavailable; continuing in memory:", error.message); } app.listen(PORT, "0.0.0.0", () => { console.log(`Oracle Stack listening on 0.0.0.0:${PORT}`); setTimeout(()=>salesForceTick(),5000); setInterval(()=>salesForceTick(),60000).unref(); if (process.env.ORACLE_BENCHMARK_ON_START === "true") { const taskIds=String(process.env.ORACLE_BENCHMARK_TASK_IDS||"").split(",").map(x=>x.trim()).filter(Boolean); const modelIds=String(process.env.ORACLE_BENCHMARK_MODEL_IDS||"").split(",").map(x=>x.trim()).filter(Boolean); console.log("ORACLE_BENCHMARK starting one-time benchmark.", JSON.stringify({taskIds:taskIds.length?taskIds:"all",modelIds:modelIds.length?modelIds:"all"})); runBenchmarkSuite({ repeats: 1, taskIds, modelIds, resume:false }).then(() => console.log("ORACLE_BENCHMARK_RESULT", JSON.stringify(benchmarkState.report?.summary || []))).catch(error => console.error("ORACLE_BENCHMARK_ERROR", error.message)); } }); }
+async function start() { try { const state = await initStorage(); if (state.enabled) { setDynamicApiKeys(await findActiveBetaKeyHashes()); const rows = await loadRoutePerformance(); for (const row of rows) modelPerformance.set(row.route_key, { attempts: Number(row.attempts || 0), successes: Number(row.successes || 0), failures: Number(row.failures || 0), repairs: Number(row.repairs || 0), feedbackTotal: Number(row.feedback_total || 0), feedbackCount: Number(row.feedback_count || 0), avgMs: Number(row.avg_ms || 0) }); console.log(`Oracle loaded ${rows.length} learned routes from Postgres.`); } else console.log("Oracle persistence: in-memory mode (DATABASE_URL not configured)."); } catch (error) { console.error("Oracle persistence unavailable; continuing in memory:", error.message); } app.listen(PORT, "0.0.0.0", () => { console.log(`Oracle Stack listening on 0.0.0.0:${PORT}`); setTimeout(()=>salesForceTick(),5000); setInterval(()=>salesForceTick(),60000).unref(); setTimeout(()=>pollGmailReplies().catch(error=>console.error("Gmail reply poll failed:",error.message)),15000); setInterval(()=>pollGmailReplies().catch(error=>console.error("Gmail reply poll failed:",error.message)),120000).unref(); if (process.env.ORACLE_BENCHMARK_ON_START === "true") { const taskIds=String(process.env.ORACLE_BENCHMARK_TASK_IDS||"").split(",").map(x=>x.trim()).filter(Boolean); const modelIds=String(process.env.ORACLE_BENCHMARK_MODEL_IDS||"").split(",").map(x=>x.trim()).filter(Boolean); console.log("ORACLE_BENCHMARK starting one-time benchmark.", JSON.stringify({taskIds:taskIds.length?taskIds:"all",modelIds:modelIds.length?modelIds:"all"})); runBenchmarkSuite({ repeats: 1, taskIds, modelIds, resume:false }).then(() => console.log("ORACLE_BENCHMARK_RESULT", JSON.stringify(benchmarkState.report?.summary || []))).catch(error => console.error("ORACLE_BENCHMARK_ERROR", error.message)); } }); }
 start();
