@@ -272,8 +272,9 @@ export function buildDiscoveryQuerySpecs(request = "") {
   const campaignSpecific = Boolean(targetBuyer || offer);
   const broad = !campaignSpecific && broadOpportunityIntent(request);
 
-  if (campaignSpecific && homeServiceVerticals(targetBuyer).length) {
-    const verticals=homeServiceVerticals(targetBuyer);
+  const homeServiceTargets=homeServiceVerticals(`${targetBuyer} ${goal}`);
+  if (campaignSpecific && homeServiceTargets.length) {
+    const verticals=homeServiceTargets;
     return {
       techIntent:false,
       broad:false,
