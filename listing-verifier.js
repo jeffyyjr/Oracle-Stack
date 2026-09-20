@@ -18,11 +18,13 @@ function statusFromPage(url, response, text) {
   if (response.status === 404 || response.status === 410) return "CLOSED";
   if (!response.ok) return response.status === 401 || response.status === 403 ? "INACCESSIBLE" : "UNKNOWN";
 
-  const closed = /(job is no longer available|project is no longer available|job has been closed|project has been closed|no longer accepting proposals|this job is closed|project closed|job filled|project completed)/i;
-  const open = /(submit a proposal|apply now|place a bid|bid on this project|send proposal|open for bidding|proposals?\s*[:(]|bids?\s*[:(])/i;
+  const closed = /(job is no longer available|project is no longer available|job has been closed|project has been closed|no longer accepting proposals|this job is closed|project closed|job filled|project completed|solicitation closed|bid period has closed|submission period has ended|deadline has passed)/i;
+  const marketplaceOpen = /(submit a proposal|apply now|place a bid|bid on this project|send proposal|open for bidding|proposals?\s*[:(]|bids?\s*[:(])/i;
+  const procurementOpen = /(request for proposal|request for quote|solicitation|invitation to bid|tender)/i.test(text)
+    && /(deadline|due date|responses due|proposals due|bids due|closing date|submission date)/i.test(text);
 
   if (closed.test(text)) return "CLOSED";
-  if (open.test(text)) return "VERIFIED_OPEN";
+  if (marketplaceOpen.test(text) || procurementOpen) return "VERIFIED_OPEN";
   if (/upwork\.com|freelancer\.com|peopleperhour\.com/i.test(url) && /(sign in|log in|access denied|captcha|verify you are human)/i.test(lower)) return "INACCESSIBLE";
   return "UNKNOWN";
 }
