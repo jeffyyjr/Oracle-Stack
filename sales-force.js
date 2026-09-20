@@ -160,10 +160,9 @@ export function evidenceToLead(campaign, item) {
       qualification: item.qualification || null,
       prospecting: item.prospecting === true,
       fitSignals: Array.isArray(item.fitSignals) ? item.fitSignals.slice(0,12) : [],
+      buyerEmailRole: text(item.buyerEmailRole,80) || null,
+      buyerEmailContext: text(item.buyerEmailContext,420) || null,
       verification: item.verification || null,
-      qualification: item.qualification || null,
-      fitSignals: Array.isArray(item.fitSignals) ? item.fitSignals : [],
-      prospecting: item.prospecting === true,
       observedAt: new Date().toISOString()
     },
     score,
