@@ -16,6 +16,18 @@ function money(value) {
   return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed * 100) / 100 : null;
 }
 
+export function explicitBuyerEmail(item = {}) {
+  const candidates = [
+    item.buyerEmail, item.buyer_email, item.contactEmail, item.contact_email, item.email,
+    item.verification?.buyerEmail, item.verification?.contactEmail, item.verification?.email
+  ];
+  for (const value of candidates) {
+    const candidate = String(value || "").trim().toLowerCase();
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(candidate)) return candidate.slice(0, 320);
+  }
+  return null;
+}
+
 export function extractBuyerBudget(input = {}) {
   const explicit = money(input.buyerBudget ?? input.budget ?? input.amount);
   if (explicit !== null) return explicit;
@@ -87,6 +99,7 @@ export function evidenceToLead(campaign, item) {
     source: text(item.source || item.channel || "web", 80),
     sourceUrl,
     buyerProblem: text(item.snippet || item.title, 1600),
+    buyerEmail: explicitBuyerEmail(item),
     evidence: {
       channel: item.channel || null,
       signalType: item.signalType || null,

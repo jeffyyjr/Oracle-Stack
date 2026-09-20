@@ -14,6 +14,7 @@ import { techFixerInstructions } from "./agents/tech-fixer.js";
 import { dealQualifierInstructions } from "./agents/deal-qualifier.js";
 import { executionAgentInstructions } from "./agents/execution-agent.js";
 import { normalizeCampaign, evidenceToLead, nextStage, summarizePipeline } from "./sales-force.js";
+import { resendOutreachConfigured, resendConfigurationStatus, sendResendOutreach } from "./resend-connector.js";
 import { materializeExecutionArtifacts, applyArtifactRepairs, rerunArtifactTests, finalizeArtifact } from "./artifact-workspace.js";
 import {
   initStorage, storageEnabled, loadRoutePerformance, saveRoutePerformance,
@@ -273,7 +274,7 @@ async function runCandidate({ request, route, model, marketEvidence = null }) {
     const elapsedMs = Date.now() - started; const pass = route.domain === "revenue" ? Boolean(answer && answer.trim()) : Boolean(judged.qa.pass); updatePerformance({ modelId: model.id, domain: route.domain, depth: route.depth, success: pass, repaired, ms: elapsedMs }); return { ok: pass, answer, qa: judged.qa, repaired, calls, elapsedMs, error: pass ? null : "QA failed after repair" };
   } catch (error) { const elapsedMs = Date.now() - started; updatePerformance({ modelId: model.id, domain: route.domain, depth: route.depth, success: false, repaired, ms: elapsedMs }); return { ok: false, answer: "", qa: { pass: false, issues: [error.message], repair_instructions: "" }, repaired, calls, elapsedMs, error: error.message }; }
 }
-app.get("/api/health", (_req, res) => res.json({ ok: true, service: "oracle-stack", mode: "autonomous-sales-force", liveMarketDiscovery: discoveryEnabled(), salesForce: { enabled: process.env.SALES_FORCE_ENABLED !== "false", persistent: storageEnabled(), outreachConnector: Boolean(process.env.SALES_OUTREACH_WEBHOOK_URL) }, routingPolicy: ROUTING_POLICY, persistence: storageEnabled() ? "postgres" : "memory", developerApi: apiAuthEnabled() ? "enabled" : "disabled", failover: { enabled: true, maxModels: MAX_FAILOVER_MODELS, providerTimeoutMs: PROVIDER_TIMEOUT_MS, revenueProviderTimeoutMs: REVENUE_PROVIDER_TIMEOUT_MS, revenueHedging: true, revenueHedgeDelayMs: Math.max(1000, Number(process.env.REVENUE_HEDGE_DELAY_MS || 5000)) }, providers: [...new Set(modelRegistry().map(model => model.provider))], models: modelRegistry().map(model => ({ id: model.id, provider: model.provider, model: model.model })) }));
+app.get("/api/health", (_req, res) => res.json({ ok: true, service: "oracle-stack", mode: "autonomous-sales-force", liveMarketDiscovery: discoveryEnabled(), salesForce: { enabled: process.env.SALES_FORCE_ENABLED !== "false", persistent: storageEnabled(), outreachConnector: salesOutreachConfigured(), resend: resendConfigurationStatus() }, routingPolicy: ROUTING_POLICY, persistence: storageEnabled() ? "postgres" : "memory", developerApi: apiAuthEnabled() ? "enabled" : "disabled", failover: { enabled: true, maxModels: MAX_FAILOVER_MODELS, providerTimeoutMs: PROVIDER_TIMEOUT_MS, revenueProviderTimeoutMs: REVENUE_PROVIDER_TIMEOUT_MS, revenueHedging: true, revenueHedgeDelayMs: Math.max(1000, Number(process.env.REVENUE_HEDGE_DELAY_MS || 5000)) }, providers: [...new Set(modelRegistry().map(model => model.provider))], models: modelRegistry().map(model => ({ id: model.id, provider: model.provider, model: model.model })) }));
 app.get("/api/artifacts", async (req,res) => {
   if(!storageEnabled()) return res.status(503).json({error:"Postgres persistence is not enabled."});
   try { res.json({artifacts:await listArtifacts(req.query.limit)}); }
@@ -368,10 +369,25 @@ function salesCampaignShape(row) {
   };
 }
 
+function salesOutreachConfigured() {
+  return resendOutreachConfigured() || Boolean(String(process.env.SALES_OUTREACH_WEBHOOK_URL || "").trim());
+}
+
 async function sendSalesOutreach(campaign,lead) {
+  if (resendOutreachConfigured()) {
+    const result = await sendResendOutreach({ lead, message: lead.outreach_draft || lead.outreachDraft });
+    if (!result.accepted) {
+      await recordSalesEvent({campaignId:campaign.id,leadId:lead.id,eventType:"outreach_held",detail:{connector:"resend",reason:result.reason}});
+      return {sent:false,reason:result.reason,connectorResponse:result};
+    }
+    const updated=await updateSalesLead(lead.id,{stage:"contacted",outreachStatus:"sent",externalMessageId:result.messageId});
+    await recordSalesEvent({campaignId:campaign.id,leadId:lead.id,eventType:"outreach_sent",detail:{connector:"resend",externalMessageId:result.messageId,providerId:result.providerId,to:result.to}});
+    return {sent:true,lead:updated,connectorResponse:result};
+  }
+
   const url=String(process.env.SALES_OUTREACH_WEBHOOK_URL||"").trim();
   if(!url)return {sent:false,reason:"No outreach connector is configured; the message remains ready for review."};
-  const payload={event:"oracle.sales.outreach",campaign:{id:campaign.id,name:campaign.name},lead:{id:lead.id,name:lead.name,sourceUrl:lead.source_url||lead.sourceUrl,buyerProblem:lead.buyer_problem||lead.buyerProblem},message:lead.outreach_draft||lead.outreachDraft};
+  const payload={event:"oracle.sales.outreach",campaign:{id:campaign.id,name:campaign.name},lead:{id:lead.id,name:lead.name,sourceUrl:lead.source_url||lead.sourceUrl,buyerProblem:lead.buyer_problem||lead.buyerProblem,buyerEmail:lead.buyer_email||lead.buyerEmail||null},message:lead.outreach_draft||lead.outreachDraft};
   const body=JSON.stringify(payload),secret=String(process.env.SALES_OUTREACH_WEBHOOK_SECRET||"");
   const headers={"Content-Type":"application/json","User-Agent":"Oracle-Stack-Sales-Force/1.0"};
   if(secret)headers["X-Oracle-Signature"]=`sha256=${crypto.createHmac("sha256",secret).update(body).digest("hex")}`;
@@ -379,8 +395,10 @@ async function sendSalesOutreach(campaign,lead) {
   const raw=await response.text();
   if(!response.ok)throw new Error(`Outreach connector returned HTTP ${response.status}: ${raw.slice(0,300)}`);
   let result={};try{result=raw?JSON.parse(raw):{};}catch{result={response:raw.slice(0,300)};}
-  const updated=await updateSalesLead(lead.id,{stage:"contacted",outreachStatus:"sent",externalMessageId:String(result.messageId||result.id||"")||null});
-  await recordSalesEvent({campaignId:campaign.id,leadId:lead.id,eventType:"outreach_sent",detail:{connector:"webhook",externalMessageId:result.messageId||result.id||null}});
+  const messageId=String(result.messageId||result.id||"").trim();
+  if(!messageId)throw new Error("Outreach connector did not return a provider message id.");
+  const updated=await updateSalesLead(lead.id,{stage:"contacted",outreachStatus:"sent",externalMessageId:messageId});
+  await recordSalesEvent({campaignId:campaign.id,leadId:lead.id,eventType:"outreach_sent",detail:{connector:"webhook",externalMessageId:messageId}});
   return {sent:true,lead:updated,connectorResponse:result};
 }
 
@@ -397,7 +415,7 @@ async function runSalesCampaign(campaignRow,{manual=false}={}) {
       if(lead.stage==="qualified") {
         qualified++;
         lead=await updateSalesLead(lead.id,{stage:"outreach_ready"})||lead;
-        if(campaign.outreachMode==="auto"&&campaign.authorizedAutoOutreach&&process.env.SALES_OUTREACH_WEBHOOK_URL&&lead.outreach_status==="not_sent") {
+        if(campaign.outreachMode==="auto"&&campaign.authorizedAutoOutreach&&salesOutreachConfigured()&&lead.outreach_status==="not_sent") {
           try{const delivery=await sendSalesOutreach(campaign,lead);if(delivery.sent){sent++;lead=delivery.lead;}}
           catch(error){await recordSalesEvent({campaignId:campaign.id,leadId:lead.id,eventType:"outreach_failed",detail:{error:error.message}});}
         }
@@ -425,7 +443,7 @@ async function salesForceTick() {
 }
 
 app.get("/api/sales/dashboard",requireAdmin,async(req,res)=>{
-  try{const campaignId=String(req.query.campaignId||"").trim()||null;const [campaigns,leads,events]=await Promise.all([listSalesCampaigns(),listSalesLeads({campaignId,limit:250}),listSalesEvents(campaignId,100)]);res.json({automationEnabled:process.env.SALES_FORCE_ENABLED!=="false",discoveryEnabled:discoveryEnabled(),outreachConnector:Boolean(process.env.SALES_OUTREACH_WEBHOOK_URL),campaigns,leads,events,summary:summarizePipeline(leads)});}
+  try{const campaignId=String(req.query.campaignId||"").trim()||null;const [campaigns,leads,events]=await Promise.all([listSalesCampaigns(),listSalesLeads({campaignId,limit:250}),listSalesEvents(campaignId,100)]);res.json({automationEnabled:process.env.SALES_FORCE_ENABLED!=="false",discoveryEnabled:discoveryEnabled(),outreachConnector:salesOutreachConfigured(),resend:resendConfigurationStatus(),campaigns,leads,events,summary:summarizePipeline(leads)});}
   catch(error){res.status(500).json({error:error.message});}
 });
 app.post("/api/sales/campaigns",requireAdmin,async(req,res)=>{try{const campaign=normalizeCampaign(req.body||{});res.status(201).json({campaign:await createSalesCampaign(campaign)});}catch(error){res.status(400).json({error:error.message});}});
