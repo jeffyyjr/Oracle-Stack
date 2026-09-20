@@ -43,6 +43,9 @@ export function gmailConfigurationStatus() {
 function transporter() {
   return nodemailer.createTransport({
     service: "gmail",
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 15000,
     auth: { user: env("GMAIL_USER"), pass: env("GMAIL_APP_PASSWORD") }
   });
 }
