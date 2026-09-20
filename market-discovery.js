@@ -249,6 +249,8 @@ async function inspectBusinessProspect(seed = {}, verticals = []) {
   if(/(yelp|angi|homeadvisor|thumbtack|bbb|facebook|linkedin|mapquest|yellowpages|forbes|wikipedia|reddit)\./i.test(host)) return null;
 
   const first=await fetchPublicHtml(seed.url,4500); if(!first) return null;
+  const firstUrl=new URL(first.url);
+  const home=firstUrl.pathname!=="/" ? await fetchPublicHtml(firstUrl.origin+"/",4500) : null;
   let html=first.html, pageText=visiblePageText(html);
   const combined=`${seed.title} ${seed.snippet} ${pageText.slice(0,12000)}`;
   const vertical=verticals.find(v => new RegExp(v.replace(/\s+/g,"\\s+"),"i").test(combined));
@@ -269,7 +271,8 @@ async function inspectBusinessProspect(seed = {}, verticals = []) {
 
   const signals=prospectFitSignals(pageText);
   const verified=Boolean(email && signals.length>=1);
-  const businessName=extractBusinessName(first.html,seed.title,new URL(first.url).hostname).slice(0,180);
+  const brandHtml=home?.html||first.html;
+  const businessName=extractBusinessName(brandHtml,seed.title,firstUrl.hostname).slice(0,180);
   const score=Math.min(92,55 + (email?15:0) + Math.min(20,signals.length*5) + (signals.includes("urgent_lead_flow")?5:0));
   return {
     ...seed,
