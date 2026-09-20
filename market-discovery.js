@@ -82,11 +82,58 @@ export function discoveryEnabled() {
   return Boolean(process.env.BRAVE_SEARCH_API_KEY || process.env.SERPER_API_KEY);
 }
 
+function campaignField(request = "", label = "") {
+  const match = String(request).match(new RegExp("(?:^|\\n)" + label + ":\\s*([^\\n]+)", "i"));
+  return match ? cleanText(match[1]).slice(0, 220) : "";
+}
+
 export function buildDiscoveryQuerySpecs(request = "") {
   const goal = compactGoal(request, 220);
   const techTerms = "API integration automation SaaS AWS deployment backend database AI workflow bug fix";
   const techIntent = /tech|software|saas|app|website|api|integration|automation|deploy|bug|code|data|ai|computer/i.test(goal);
-  const broad = broadOpportunityIntent(request);
+  const targetBuyer = campaignField(request, "Target buyer");
+  const offer = campaignField(request, "Offer");
+  const campaignSpecific = Boolean(targetBuyer || offer);
+  const broad = !campaignSpecific && broadOpportunityIntent(request);
+
+  if (campaignSpecific) {
+    const buyer = targetBuyer || "small business";
+    const solution = offer || goal || "automation service";
+    const focused = `${buyer} ${solution}`.slice(0, 260);
+    return {
+      techIntent,
+      broad: false,
+      campaignSpecific: true,
+      strategy: "campaign_specific_buyer_demand",
+      specs: [
+        {
+          channel: "upwork",
+          signalType: "demand",
+          q: `site:upwork.com/freelance-jobs/apply/ ("${buyer.slice(0, 100)}" OR "${solution.slice(0, 100)}") (automation OR CRM OR "appointment booking" OR "lead follow up" OR "missed calls") ("Fixed Price" OR hourly OR budget) -academic -homework`
+        },
+        {
+          channel: "freelancer",
+          signalType: "demand",
+          q: `site:freelancer.com/projects/ ("${buyer.slice(0, 100)}" OR "${solution.slice(0, 100)}") (automation OR CRM OR booking OR leads OR follow-up) (budget OR fixed OR hourly) -academic -homework`
+        },
+        {
+          channel: "reddit",
+          signalType: "demand",
+          q: `site:reddit.com/r/forhire/comments/ OR site:reddit.com/r/smallbusiness/comments/ ("${buyer.slice(0, 100)}" OR "${solution.slice(0, 100)}") (hiring OR "need help" OR "looking for" OR budget OR paid)`
+        },
+        {
+          channel: "public_rfp",
+          signalType: "demand",
+          q: `("request for proposal" OR RFP OR solicitation OR "request for quote") ("${buyer.slice(0, 100)}" OR "${solution.slice(0, 100)}") (automation OR CRM OR booking OR lead) (deadline OR due)`
+        },
+        {
+          channel: "web_demand",
+          signalType: "context",
+          q: `${focused} ("looking for" OR "need help" OR "seeking" OR hiring) (automation OR CRM OR booking OR leads)`
+        }
+      ]
+    };
+  }
 
   if (broad) {
     // Broad opportunity scans must start from real buyers, not "best side hustle" articles.
@@ -320,7 +367,7 @@ export async function discoverMarketEvidence(request, { count = 14 } = {}) {
     });
   }
 
-  const primaryPerQuery = plan.broad ? 6 : plan.techIntent ? 8 : Math.max(4, Math.ceil(count / 2));
+  const primaryPerQuery = plan.campaignSpecific ? 8 : plan.broad ? 6 : plan.techIntent ? 8 : Math.max(4, Math.ceil(count / 2));
   const primaryRaw = await collect(plan.specs, primaryPerQuery);
 
   // Direct-demand sources first so the verification budget is not spent on context.
@@ -331,7 +378,7 @@ export async function discoverMarketEvidence(request, { count = 14 } = {}) {
   });
 
   const primarySelected = primaryRaw.slice(0, count);
-  let enriched = await enrich(primarySelected, plan.broad ? 10 : plan.techIntent ? 8 : 6);
+  let enriched = await enrich(primarySelected, plan.campaignSpecific ? 12 : plan.broad ? 10 : plan.techIntent ? 8 : 6);
   let rescueTriggered = enriched.every(x => x.qualification !== "QUALIFIED");
   let rescueResultCount = 0;
 
