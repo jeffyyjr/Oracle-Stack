@@ -91,7 +91,7 @@ export async function initStorage() {
     ALTER TABLE oracle_sales_campaigns ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'USD';
     CREATE TABLE IF NOT EXISTS oracle_sales_leads (
       id UUID PRIMARY KEY, campaign_id UUID NOT NULL REFERENCES oracle_sales_campaigns(id) ON DELETE CASCADE,
-      name TEXT NOT NULL, source TEXT, source_url TEXT NOT NULL, buyer_problem TEXT,
+      name TEXT NOT NULL, source TEXT, source_url TEXT NOT NULL, buyer_problem TEXT, buyer_email TEXT,
       evidence JSONB NOT NULL DEFAULT '{}'::jsonb, score INTEGER NOT NULL DEFAULT 0,
       stage TEXT NOT NULL DEFAULT 'discovered', outreach_draft TEXT NOT NULL DEFAULT '',
       outreach_status TEXT NOT NULL DEFAULT 'not_sent', external_message_id TEXT,
@@ -104,6 +104,7 @@ export async function initStorage() {
     );
     CREATE INDEX IF NOT EXISTS oracle_sales_leads_campaign_idx ON oracle_sales_leads(campaign_id,created_at DESC);
     CREATE INDEX IF NOT EXISTS oracle_sales_leads_stage_idx ON oracle_sales_leads(stage,updated_at DESC);
+    ALTER TABLE oracle_sales_leads ADD COLUMN IF NOT EXISTS buyer_email TEXT;
     ALTER TABLE oracle_sales_leads ADD COLUMN IF NOT EXISTS proposal_draft TEXT NOT NULL DEFAULT '';
     ALTER TABLE oracle_sales_leads ADD COLUMN IF NOT EXISTS proposal_price DOUBLE PRECISION;
     ALTER TABLE oracle_sales_leads ADD COLUMN IF NOT EXISTS proposal_currency TEXT;
@@ -361,15 +362,15 @@ export async function upsertSalesLead(lead) {
   if (!enabled) throw new Error("Sales force storage is unavailable.");
   const result=await pool.query(`
     INSERT INTO oracle_sales_leads
-      (id,campaign_id,name,source,source_url,buyer_problem,evidence,score,stage,outreach_draft,estimated_value,estimated_margin)
-    VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12)
+      (id,campaign_id,name,source,source_url,buyer_problem,buyer_email,evidence,score,stage,outreach_draft,estimated_value,estimated_margin)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13)
     ON CONFLICT (campaign_id,source_url) DO UPDATE SET
-      name=EXCLUDED.name,buyer_problem=EXCLUDED.buyer_problem,evidence=EXCLUDED.evidence,
+      name=EXCLUDED.name,buyer_problem=EXCLUDED.buyer_problem,buyer_email=COALESCE(EXCLUDED.buyer_email,oracle_sales_leads.buyer_email),evidence=EXCLUDED.evidence,
       score=GREATEST(oracle_sales_leads.score,EXCLUDED.score),
       outreach_draft=CASE WHEN oracle_sales_leads.outreach_status='not_sent' THEN EXCLUDED.outreach_draft ELSE oracle_sales_leads.outreach_draft END,
       updated_at=NOW()
     RETURNING *
-  `,[lead.id,lead.campaignId,lead.name,lead.source,lead.sourceUrl,lead.buyerProblem,JSON.stringify(lead.evidence),lead.score,lead.stage,lead.outreachDraft,lead.estimatedValue,lead.estimatedMargin]);
+  `,[lead.id,lead.campaignId,lead.name,lead.source,lead.sourceUrl,lead.buyerProblem,lead.buyerEmail||null,JSON.stringify(lead.evidence),lead.score,lead.stage,lead.outreachDraft,lead.estimatedValue,lead.estimatedMargin]);
   return result.rows[0];
 }
 
