@@ -349,7 +349,10 @@ function priorityBuyerSeeds() {
       source:"priority_buyer_seed",
       channel:String(x?.channel||"upwork").trim().toLowerCase(),
       signalType:"demand",
-      priorityBuyer:true
+      priorityBuyer:true,
+      scoutStatus:String(x?.scoutStatus||"").trim().toUpperCase() || null,
+      scoutVerifiedAt:String(x?.scoutVerifiedAt||"").trim() || null,
+      scoutEvidence:cleanText(x?.scoutEvidence||"").slice(0,2000) || null
     })).filter(x=>/^https?:\/\//i.test(x.url));
   } catch { return []; }
 }
@@ -646,6 +649,29 @@ function looksLikeListing(item) {
   return false;
 }
 
+export function resolveBuyerVerification(item = {}, directVerification = null, now = new Date()) {
+  if (directVerification?.status === "CLOSED") return directVerification;
+  if (directVerification?.status === "VERIFIED_OPEN") return directVerification;
+
+  const marketplace=["upwork","freelancer","peopleperhour"].includes(String(item.channel||"").toLowerCase());
+  if (!item.priorityBuyer || !marketplace || item.scoutStatus !== "VERIFIED_OPEN" || !item.scoutVerifiedAt) {
+    return directVerification;
+  }
+
+  const checked=new Date(item.scoutVerifiedAt);
+  const ageMs=now.getTime()-checked.getTime();
+  const ttlMs=24*60*60*1000;
+  if (!Number.isFinite(checked.getTime()) || ageMs<0 || ageMs>ttlMs) return directVerification;
+
+  return {
+    status:"VERIFIED_OPEN",
+    verifiedAt:checked.toISOString(),
+    method:"fresh_external_scout",
+    evidence:item.scoutEvidence || "Fresh external scout verified this marketplace buyer post as open.",
+    directStatus:directVerification?.status || "NOT_CHECKED"
+  };
+}
+
 export function classifyDemandEvidence(item) {
   if (!item || item.signalType !== "demand") return "CONTEXT_ONLY";
   if (!DIRECT_DEMAND_CHANNELS.has(item.channel)) return "CONTEXT_ONLY";
@@ -710,7 +736,9 @@ export async function discoverMarketEvidence(request, { count = 14 } = {}) {
     const buyerVerified=await verifyListings(allBuyerRaw,Math.min(20,Math.max(12,count)));
     const verificationByUrl=new Map(buyerVerified.map(x=>[x.url,x.verification]));
     const buyers=allBuyerRaw.map(x=>{
-      const item={...x,verification:verificationByUrl.get(x.url)||null};
+      const directVerification=verificationByUrl.get(x.url)||null;
+      const verification=resolveBuyerVerification(x,directVerification);
+      const item={...x,verification};
       return {...item,qualification:classifyDemandEvidence(item),buyerPriority:true};
     });
 

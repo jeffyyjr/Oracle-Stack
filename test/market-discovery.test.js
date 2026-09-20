@@ -4,7 +4,8 @@ import {
   broadOpportunityIntent,
   buildDiscoveryQuerySpecs,
   buildAccessibleRescueSpecs,
-  classifyDemandEvidence
+  classifyDemandEvidence,
+  resolveBuyerVerification
 } from "../market-discovery.js";
 
 test("broad inventory-free request uses buyer radar", () => {
@@ -66,4 +67,39 @@ test("home-service campaign scans active buyers before cold prospects", () => {
   assert.ok(plan.buyerSpecs.some(x => x.channel === "upwork" && x.signalType === "demand"));
   assert.ok(plan.prospectSpecs.length >= 5);
   assert.ok(plan.prospectSpecs.every(x => x.channel === "business_web" && x.signalType === "prospect"));
+});
+
+
+test("fresh scout verification can qualify a blocked priority marketplace buyer", () => {
+  const now=new Date("2026-09-20T21:45:00Z");
+  const resolved=resolveBuyerVerification({
+    channel:"upwork",
+    priorityBuyer:true,
+    scoutStatus:"VERIFIED_OPEN",
+    scoutVerifiedAt:"2026-09-20T21:00:00Z",
+    scoutEvidence:"Fresh web retrieval showed the live buyer post."
+  },{status:"INACCESSIBLE",verifiedAt:"2026-09-20T21:44:00Z"},now);
+  assert.equal(resolved.status,"VERIFIED_OPEN");
+  assert.equal(resolved.method,"fresh_external_scout");
+});
+
+test("direct CLOSED verification overrides fresh scout evidence", () => {
+  const resolved=resolveBuyerVerification({
+    channel:"upwork",
+    priorityBuyer:true,
+    scoutStatus:"VERIFIED_OPEN",
+    scoutVerifiedAt:"2026-09-20T21:00:00Z"
+  },{status:"CLOSED",verifiedAt:"2026-09-20T21:44:00Z"},new Date("2026-09-20T21:45:00Z"));
+  assert.equal(resolved.status,"CLOSED");
+});
+
+test("stale scout verification does not qualify a buyer", () => {
+  const direct={status:"INACCESSIBLE",verifiedAt:"2026-09-20T21:44:00Z"};
+  const resolved=resolveBuyerVerification({
+    channel:"upwork",
+    priorityBuyer:true,
+    scoutStatus:"VERIFIED_OPEN",
+    scoutVerifiedAt:"2026-09-18T21:00:00Z"
+  },direct,new Date("2026-09-20T21:45:00Z"));
+  assert.deepEqual(resolved,direct);
 });
