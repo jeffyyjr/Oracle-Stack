@@ -5,8 +5,8 @@
   "description": "Adaptive AI execution layer that routes work across models and specialists, quality-checks results, and learns from outcomes.",
   "type": "module",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js",
+    "start": "node --import ./outreach-fetch-guard.js server.js",
+    "dev": "node --import ./outreach-fetch-guard.js --watch server.js",
     "test": "node --test",
     "benchmark": "node scripts/benchmark.js"
   },
